@@ -34,8 +34,9 @@
     }
 
     .game-wrapper {
-      width: min(96vw, calc(92vh * 9 / 16), 405px);
-      aspect-ratio: 9 / 16;
+      width: min(100vw, calc(100vh * 1080 / 2436));
+      height: min(100vh, calc(100vw * 2436 / 1080));
+      aspect-ratio: 1080 / 2436;
       border: 4px solid #1b2b56;
       background: #030713;
       box-shadow: 0 0 35px rgba(60, 100, 255, 0.25);
@@ -44,8 +45,9 @@
 
     @media (orientation: landscape) {
       .game-wrapper {
-        width: min(96vw, calc(92vh * 16 / 9), 960px);
-        aspect-ratio: 16 / 9;
+        width: min(100vw, calc(100vh * 1920 / 1200));
+        height: min(100vh, calc(100vw * 1200 / 1920));
+        aspect-ratio: 1920 / 1200;
       }
     }
 
@@ -81,12 +83,44 @@
   const MUSIC_KEY = "astronaut_space_music";
   const SFX_KEY = "astronaut_space_sfx";
 
-  let isLandscape = window.innerWidth > window.innerHeight;
-  let W = isLandscape ? 960 : 360;
-  let H = isLandscape ? 540 : 640;
+  const PORTRAIT_CANVAS_W = 1080;
+  const PORTRAIT_CANVAS_H = 2436;
+  const LANDSCAPE_CANVAS_W = 1920;
+  const LANDSCAPE_CANVAS_H = 1200;
 
-  canvas.width = W;
-  canvas.height = H;
+  /*
+    Game tetap memakai ukuran logika agar posisi tombol, karakter, obstacle,
+    dan sistem collision tidak rusak.
+    Canvas fisik dirender ke:
+    - Portrait  : 1080 x 2436 px
+    - Landscape : 1920 x 1200 px
+  */
+  const PORTRAIT_LOGICAL_W = 360;
+  const PORTRAIT_LOGICAL_H = 812;
+  const LANDSCAPE_LOGICAL_W = 960;
+  const LANDSCAPE_LOGICAL_H = 600;
+
+  let isLandscape = window.innerWidth > window.innerHeight;
+  let renderScale = isLandscape
+    ? LANDSCAPE_CANVAS_W / LANDSCAPE_LOGICAL_W
+    : PORTRAIT_CANVAS_W / PORTRAIT_LOGICAL_W;
+
+  let W = isLandscape ? LANDSCAPE_LOGICAL_W : PORTRAIT_LOGICAL_W;
+  let H = isLandscape ? LANDSCAPE_LOGICAL_H : PORTRAIT_LOGICAL_H;
+
+  function applyCanvasResolution() {
+    canvas.width = isLandscape ? LANDSCAPE_CANVAS_W : PORTRAIT_CANVAS_W;
+    canvas.height = isLandscape ? LANDSCAPE_CANVAS_H : PORTRAIT_CANVAS_H;
+
+    renderScale = isLandscape
+      ? LANDSCAPE_CANVAS_W / LANDSCAPE_LOGICAL_W
+      : PORTRAIT_CANVAS_W / PORTRAIT_LOGICAL_W;
+
+    ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+  }
+
+  applyCanvasResolution();
 
   let highScore = Number(localStorage.getItem(STORAGE_KEY)) || 0;
   let crownUnlocked = localStorage.getItem(CROWN_KEY) === "true" || highScore >= 100;
@@ -370,10 +404,10 @@
 
   function resizeCanvas() {
     const newLandscape = window.innerWidth > window.innerHeight;
-    const newW = newLandscape ? 960 : 360;
-    const newH = newLandscape ? 540 : 640;
+    const newW = newLandscape ? LANDSCAPE_LOGICAL_W : PORTRAIT_LOGICAL_W;
+    const newH = newLandscape ? LANDSCAPE_LOGICAL_H : PORTRAIT_LOGICAL_H;
 
-    if (newW === W && newH === H) return;
+    if (newLandscape === isLandscape && newW === W && newH === H) return;
 
     const oldW = W;
     const oldH = H;
@@ -382,9 +416,7 @@
     W = newW;
     H = newH;
 
-    canvas.width = W;
-    canvas.height = H;
-    ctx.imageSmoothingEnabled = false;
+    applyCanvasResolution();
 
     player.x = (player.x / oldW) * W;
     player.y = (player.y / oldH) * H;
