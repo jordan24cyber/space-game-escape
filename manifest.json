@@ -1,0 +1,25 @@
+{
+  "name": "Space Game Escape",
+  "short_name": "Space Escape",
+  "description": "Game arcade luar angkasa dengan astronot, planet obstacle, UFO boss, coin, skin, achievement, dan multilevel.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#030713",
+  "theme_color": "#030713",
+  "icons": [
+  {
+    "src": "./icons/icon-192.png",
+    "sizes": "192x192",
+    "type": "image/png",
+    "purpose": "any"
+  },
+  {
+    "src": "./icons/icon-512.png",
+    "sizes": "512x512",
+    "type": "image/png",
+    "purpose": "any"
+  }
+]
+}

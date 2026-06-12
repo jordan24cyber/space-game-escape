@@ -1,0 +1,3071 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Space Game Escape</title>
+
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#030713">
+
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Space Game Escape">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+  <style>
+    * {
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-family: "Courier New", monospace;
+      color: white;
+      overflow: hidden;
+      touch-action: none;
+    }
+
+    .game-wrapper {
+      width: min(96vw, calc(92vh * 9 / 16), 405px);
+      aspect-ratio: 9 / 16;
+      border: 4px solid #1b2b56;
+      background: #030713;
+      box-shadow: 0 0 35px rgba(60, 100, 255, 0.25);
+      position: relative;
+    }
+
+    @media (orientation: landscape) {
+      .game-wrapper {
+        width: min(96vw, calc(92vh * 16 / 9), 960px);
+        aspect-ratio: 16 / 9;
+      }
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #030713;
+      touch-action: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="game-wrapper">
+    <canvas id="gameCanvas"></canvas>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById("gameCanvas");
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+
+  const STORAGE_KEY = "astronaut_space_game_high_score_yordan";
+  const CROWN_KEY = "astronaut_space_game_crown_unlocked";
+  const COIN_KEY = "astronaut_space_star_coin";
+  const SKIN_KEY = "astronaut_space_equipped_skin";
+  const OWNED_SKIN_KEY = "astronaut_space_owned_skins";
+  const ACHIEVEMENT_KEY = "astronaut_space_achievements";
+  const MUSIC_KEY = "astronaut_space_music";
+  const SFX_KEY = "astronaut_space_sfx";
+
+  let isLandscape = window.innerWidth > window.innerHeight;
+  let W = isLandscape ? 960 : 360;
+  let H = isLandscape ? 540 : 640;
+
+  canvas.width = W;
+  canvas.height = H;
+
+  let highScore = Number(localStorage.getItem(STORAGE_KEY)) || 0;
+  let crownUnlocked = localStorage.getItem(CROWN_KEY) === "true" || highScore >= 100;
+  let starCoins = Number(localStorage.getItem(COIN_KEY)) || 0;
+  let equippedSkin = localStorage.getItem(SKIN_KEY) || "classic";
+  let ownedSkins = JSON.parse(localStorage.getItem(OWNED_SKIN_KEY) || '{"classic":true}');
+  let achievements = JSON.parse(localStorage.getItem(ACHIEVEMENT_KEY) || "{}");
+
+  let musicEnabled = localStorage.getItem(MUSIC_KEY) === null ? true : localStorage.getItem(MUSIC_KEY) === "true";
+  let sfxEnabled = localStorage.getItem(SFX_KEY) === null ? true : localStorage.getItem(SFX_KEY) === "true";
+
+  let state = "menu";
+  let lastTime = 0;
+  let bgScroll = 0;
+  let readyTimer = 0;
+  let gameTime = 0;
+
+  const MAX_LEVEL = 5;
+  let level = 1;
+  let levelStartScore = 0;
+  let levelTargetScore = 150;
+  let currentChallenge = null;
+
+  let transitionActive = false;
+  let transitionTimer = 0;
+  let transitionFlash = 0;
+
+  function startX() {
+    return isLandscape ? W * 0.2 : 85;
+  }
+
+  const player = {
+    x: startX(),
+    y: H / 2,
+    vy: 0,
+    r: 7,
+    rotation: 0,
+    thrustTimer: 0,
+    hasCrown: crownUnlocked,
+    invulnTimer: 0
+  };
+
+  const dragControl = {
+    active: false,
+    hasTarget: false,
+    x: player.x,
+    y: player.y
+  };
+
+  const ufo = {
+    active: false,
+    mode: "none",
+    x: W + 150,
+    y: 120,
+    r: 34,
+    targetX: W - 72,
+    targetY: 120,
+    moveTimer: 0,
+    shootTimer: 0,
+    wobble: 0,
+    patternIndex: 0
+  };
+
+  const finishPlanet = {
+    active: false,
+    x: W + 120,
+    y: H / 2,
+    r: 32,
+    flagWave: 0
+  };
+
+  let obstacles = [];
+  let bullets = [];
+  let lasers = [];
+  let items = [];
+  let meteors = [];
+
+  let shieldActive = false;
+  let shieldTimer = 0;
+  let slowMoTimer = 0;
+
+  let battleMode = false;
+  let finalMode = false;
+  let battleScoreTimer = 0;
+  let battleStarted = false;
+  let finalStarted = false;
+  let score50UfoSpawned = false;
+  let bossHP = 50;
+
+  const gravityBase = 880;
+  const jumpPower = -355;
+
+  const baseObstacleSpeed = 145;
+  const obstacleSpacing = 245;
+  const spawnInterval = obstacleSpacing / baseObstacleSpeed;
+
+  let meteorTimer = 0;
+  let spawnTimer = 0;
+  let score = 0;
+  let obstacleIndex = 0;
+
+  let centerX = W / 2;
+
+  let menuButtons = {};
+  let pauseBtn = {};
+  let pauseButtons = {};
+  let gameOverButtons = {};
+  let levelCompleteButtons = {};
+  let winButtons = {};
+  let backButton = {};
+
+  const skinRows = [
+    { id: "classic", name: "CLASSIC SUIT", price: 0, y: 190 },
+    { id: "blue", name: "BLUE NEBULA", price: 25, y: 285 },
+    { id: "gold", name: "GOLD HERO", price: 60, y: 380 }
+  ];
+
+  const challengeList = [
+    {
+      id: "meteorZone",
+      name: "METEOR ZONE",
+      desc: "Meteor muncul acak dari kanan."
+    },
+    {
+      id: "tightGap",
+      name: "TIGHT GAP",
+      desc: "Celah antar planet lebih sempit."
+    },
+    {
+      id: "speedWave",
+      name: "SPEED WAVE",
+      desc: "Kecepatan obstacle naik-turun."
+    },
+    {
+      id: "coinRush",
+      name: "COIN RUSH",
+      desc: "Coin lebih banyak, tetapi obstacle lebih cepat."
+    },
+    {
+      id: "ufoFrenzy",
+      name: "UFO FRENZY",
+      desc: "Boss UFO lebih agresif."
+    }
+  ];
+
+  const planetTypes = [
+    { base: "#e95828", dark: "#8f2b1e", light: "#ffb04a", stripe: "#ff7a30", crater: "#bb3a24" },
+    { base: "#5fad45", dark: "#276f35", light: "#b1e35a", stripe: "#75c94a", crater: "#337a3c" },
+    { base: "#7b3ab8", dark: "#3c226b", light: "#b05bdf", stripe: "#8e45c8", crater: "#54237c" },
+    { base: "#286db7", dark: "#153a72", light: "#5db8ef", stripe: "#338bd6", crater: "#1d4f89", ring: true }
+  ];
+
+  const finishPlanetPalette = {
+    base: "#27b7d8",
+    dark: "#145b88",
+    light: "#83f0ff",
+    stripe: "#37c9ee",
+    crater: "#216fa3"
+  };
+
+  const achievementData = [
+    { key: "firstLaunch", title: "FIRST FLIGHT", desc: "Mulai game pertama kali." },
+    { key: "score50", title: "UFO SIGNAL", desc: "Mencapai score 50." },
+    { key: "score100", title: "BOSS ENCOUNTER", desc: "Masuk UFO Attack Mode." },
+    { key: "missionComplete", title: "MISSION COMPLETE", desc: "Finish ke planet bendera." },
+    { key: "coin10", title: "COIN HUNTER", desc: "Kumpulkan 10 star coin." },
+    { key: "shieldUse", title: "PROTECTED", desc: "Shield menahan tabrakan." },
+    { key: "slowUse", title: "SLOW MASTER", desc: "Gunakan power-up slow motion." },
+    { key: "skinUnlock", title: "STYLE UPGRADE", desc: "Membuka skin baru." },
+    { key: "level3", title: "LEVEL CLIMBER", desc: "Mencapai level 3." },
+    { key: "level5", title: "GALAXY ESCAPER", desc: "Mencapai level 5." }
+  ];
+
+  const achievementPopups = [];
+  let stars = [];
+  let seed = 12345;
+
+  function rand() {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  }
+
+  function randomRange(min, max) {
+    return min + Math.random() * (max - min);
+  }
+
+  function createStars() {
+    stars = [];
+
+    for (let i = 0; i < (isLandscape ? 130 : 95); i++) {
+      stars.push({
+        x: rand() * W,
+        y: rand() * (H - 70),
+        size: rand() > 0.82 ? 3 : rand() > 0.55 ? 2 : 1,
+        speed: 0.2 + rand() * 0.8,
+        bright: rand() > 0.55
+      });
+    }
+  }
+
+  function setupLayout() {
+    centerX = W / 2;
+
+    if (isLandscape) {
+      const bx = W - 285;
+      const by = 116;
+
+      menuButtons = {
+        start:   { x: bx, y: by,       w: 220, h: 42, text: "START GAME" },
+        skin:    { x: bx, y: by + 50,  w: 220, h: 42, text: "SKIN SHOP" },
+        achieve: { x: bx, y: by + 100, w: 220, h: 42, text: "ACHIEVEMENT" },
+        desc:    { x: bx, y: by + 150, w: 220, h: 42, text: "DESKRIPSI" },
+        reset:   { x: bx, y: by + 200, w: 220, h: 42, text: "RESET SCORE" }
+      };
+
+      pauseBtn = { x: W - 50, y: 12, w: 36, h: 30 };
+
+      pauseButtons = {
+        resume:  { x: centerX - 110, y: 158, w: 220, h: 42, text: "RESUME" },
+        music:   { x: centerX - 110, y: 210, w: 220, h: 42, text: "MUSIC" },
+        sfx:     { x: centerX - 110, y: 262, w: 220, h: 42, text: "SFX" },
+        restart: { x: centerX - 110, y: 314, w: 220, h: 42, text: "RESTART" },
+        menu:    { x: centerX - 110, y: 366, w: 220, h: 42, text: "MENU AWAL" }
+      };
+
+      gameOverButtons = {
+        restart: { x: centerX - 105, y: 322, w: 210, h: 46, text: "MAIN LAGI" },
+        menu:    { x: centerX - 105, y: 380, w: 210, h: 46, text: "MENU AWAL" }
+      };
+
+      levelCompleteButtons = {
+        next:    { x: centerX - 105, y: 305, w: 210, h: 46, text: "NEXT LEVEL" },
+        restart: { x: centerX - 105, y: 360, w: 210, h: 46, text: "RESTART" },
+        menu:    { x: centerX - 105, y: 415, w: 210, h: 46, text: "MENU AWAL" }
+      };
+
+      winButtons = {
+        restart: { x: centerX - 105, y: 330, w: 210, h: 46, text: "MAIN LAGI" },
+        menu:    { x: centerX - 105, y: 386, w: 210, h: 46, text: "MENU AWAL" }
+      };
+
+      backButton = { x: centerX - 105, y: H - 65, w: 210, h: 42, text: "KEMBALI" };
+    } else {
+      menuButtons = {
+        start:   { x: centerX - 105, y: 302, w: 210, h: 42, text: "START GAME" },
+        skin:    { x: centerX - 105, y: 350, w: 210, h: 42, text: "SKIN SHOP" },
+        achieve: { x: centerX - 105, y: 398, w: 210, h: 42, text: "ACHIEVEMENT" },
+        desc:    { x: centerX - 105, y: 446, w: 210, h: 42, text: "DESKRIPSI" },
+        reset:   { x: centerX - 105, y: 494, w: 210, h: 42, text: "RESET SCORE" }
+      };
+
+      pauseBtn = { x: W - 48, y: 12, w: 34, h: 30 };
+
+      pauseButtons = {
+        resume:  { x: centerX - 110, y: 238, w: 220, h: 42, text: "RESUME" },
+        music:   { x: centerX - 110, y: 290, w: 220, h: 42, text: "MUSIC" },
+        sfx:     { x: centerX - 110, y: 342, w: 220, h: 42, text: "SFX" },
+        restart: { x: centerX - 110, y: 394, w: 220, h: 42, text: "RESTART" },
+        menu:    { x: centerX - 110, y: 446, w: 220, h: 42, text: "MENU AWAL" }
+      };
+
+      gameOverButtons = {
+        restart: { x: centerX - 105, y: 358, w: 210, h: 48, text: "MAIN LAGI" },
+        menu:    { x: centerX - 105, y: 418, w: 210, h: 48, text: "MENU AWAL" }
+      };
+
+      levelCompleteButtons = {
+        next:    { x: centerX - 105, y: 342, w: 210, h: 46, text: "NEXT LEVEL" },
+        restart: { x: centerX - 105, y: 398, w: 210, h: 46, text: "RESTART" },
+        menu:    { x: centerX - 105, y: 454, w: 210, h: 46, text: "MENU AWAL" }
+      };
+
+      winButtons = {
+        restart: { x: centerX - 105, y: 380, w: 210, h: 48, text: "MAIN LAGI" },
+        menu:    { x: centerX - 105, y: 440, w: 210, h: 48, text: "MENU AWAL" }
+      };
+
+      backButton = { x: centerX - 105, y: 525, w: 210, h: 42, text: "KEMBALI" };
+    }
+  }
+
+  function resizeCanvas() {
+    const newLandscape = window.innerWidth > window.innerHeight;
+    const newW = newLandscape ? 960 : 360;
+    const newH = newLandscape ? 540 : 640;
+
+    if (newW === W && newH === H) return;
+
+    const oldW = W;
+    const oldH = H;
+
+    isLandscape = newLandscape;
+    W = newW;
+    H = newH;
+
+    canvas.width = W;
+    canvas.height = H;
+    ctx.imageSmoothingEnabled = false;
+
+    player.x = (player.x / oldW) * W;
+    player.y = (player.y / oldH) * H;
+
+    dragControl.x = (dragControl.x / oldW) * W;
+    dragControl.y = (dragControl.y / oldH) * H;
+
+    setupLayout();
+    createStars();
+  }
+
+  createStars();
+  setupLayout();
+
+  let audioCtx = null;
+  let audioStarted = false;
+  let themeInterval = null;
+  let themeStep = 0;
+
+  const themeNotes = [
+    261.63, 329.63, 392.00, 493.88,
+    392.00, 329.63, 293.66, 392.00,
+    261.63, 329.63, 440.00, 523.25,
+    493.88, 392.00, 329.63, 293.66
+  ];
+
+  function initAudio() {
+    if (audioStarted) return;
+
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioStarted = true;
+    startThemeSong();
+  }
+
+  function playTone(freq, duration, volume = 0.08, type = "square", channel = "sfx") {
+    if (!audioCtx) return;
+    if (channel === "sfx" && !sfxEnabled) return;
+    if (channel === "music" && !musicEnabled) return;
+
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+
+    gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(volume, audioCtx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration + 0.03);
+  }
+
+  function playScoreSound() {
+    playTone(680, 0.09, 0.07, "square");
+    setTimeout(() => playTone(920, 0.08, 0.06, "square"), 80);
+  }
+
+  function playCoinSound() {
+    playTone(900, 0.08, 0.07, "square");
+    setTimeout(() => playTone(1200, 0.08, 0.05, "square"), 70);
+  }
+
+  function playCrashSound() {
+    playTone(160, 0.18, 0.13, "sawtooth");
+    setTimeout(() => playTone(95, 0.24, 0.12, "sawtooth"), 120);
+    setTimeout(() => playTone(55, 0.28, 0.10, "square"), 230);
+  }
+
+  function playPowerSound() {
+    playTone(520, 0.10, 0.09, "square");
+    setTimeout(() => playTone(760, 0.10, 0.09, "square"), 100);
+    setTimeout(() => playTone(1040, 0.18, 0.08, "square"), 200);
+  }
+
+  function playShootSound() {
+    playTone(410, 0.08, 0.035, "sawtooth");
+    setTimeout(() => playTone(230, 0.08, 0.03, "square"), 60);
+  }
+
+  function playWinSound() {
+    playTone(523.25, 0.12, 0.09, "square");
+    setTimeout(() => playTone(659.25, 0.12, 0.09, "square"), 120);
+    setTimeout(() => playTone(783.99, 0.12, 0.09, "square"), 240);
+    setTimeout(() => playTone(1046.50, 0.25, 0.08, "square"), 360);
+  }
+
+  function playResetSound() {
+    playTone(360, 0.08, 0.08, "square");
+    setTimeout(() => playTone(260, 0.10, 0.07, "square"), 90);
+    setTimeout(() => playTone(180, 0.12, 0.06, "square"), 180);
+  }
+
+  function startThemeSong() {
+    if (themeInterval) return;
+
+    themeInterval = setInterval(() => {
+      if (!audioCtx) return;
+
+      const note = themeNotes[themeStep % themeNotes.length];
+      playTone(note, 0.16, 0.025, "triangle", "music");
+
+      if (themeStep % 4 === 0) {
+        playTone(note / 2, 0.22, 0.018, "sine", "music");
+      }
+
+      themeStep++;
+    }, 260);
+  }
+
+  function saveCoins() {
+    localStorage.setItem(COIN_KEY, String(starCoins));
+  }
+
+  function saveSkins() {
+    localStorage.setItem(SKIN_KEY, equippedSkin);
+    localStorage.setItem(OWNED_SKIN_KEY, JSON.stringify(ownedSkins));
+  }
+
+  function saveAchievements() {
+    localStorage.setItem(ACHIEVEMENT_KEY, JSON.stringify(achievements));
+  }
+
+  function unlockAchievement(key) {
+    if (achievements[key]) return;
+
+    achievements[key] = true;
+    saveAchievements();
+
+    const item = achievementData.find(a => a.key === key);
+
+    if (item) {
+      achievementPopups.push({
+        title: item.title,
+        desc: item.desc,
+        timer: 3.2
+      });
+    }
+
+    playPowerSound();
+  }
+
+  function getAchievementCount() {
+    return Object.values(achievements).filter(Boolean).length;
+  }
+
+  function getRank(value) {
+    if (value >= 750) return "UNIVERSE MASTER";
+    if (value >= 500) return "GALAXY LEGEND";
+    if (value >= 300) return "SPACE HERO";
+    if (value >= 150) return "UFO SURVIVOR";
+    if (value >= 50) return "SPACE ROOKIE";
+    return "CADET";
+  }
+
+  function skinPalette(skin = equippedSkin) {
+    if (skin === "blue") {
+      return {
+        suit: "#d8f2ff",
+        suitDark: "#7bb7df",
+        shade: "#4e7da6",
+        visor: "#031a2e",
+        visorLight: "#9ff5ff",
+        blue: "#245fff"
+      };
+    }
+
+    if (skin === "gold") {
+      return {
+        suit: "#fff0a6",
+        suitDark: "#c99528",
+        shade: "#8e6317",
+        visor: "#160f05",
+        visorLight: "#fff2a8",
+        blue: "#ffb000"
+      };
+    }
+
+    return {
+      suit: "#f4eadb",
+      suitDark: "#b7b2aa",
+      shade: "#7f8291",
+      visor: "#071327",
+      visorLight: "#9fc9ff",
+      blue: "#3e73ae"
+    };
+  }
+
+  function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
+  }
+
+  function rectHit(btn, x, y) {
+    return x >= btn.x && x <= btn.x + btn.w && y >= btn.y && y <= btn.y + btn.h;
+  }
+
+  function pointerPosition(e) {
+    const rect = canvas.getBoundingClientRect();
+    let clientX, clientY;
+
+    if (e.touches && e.touches.length > 0) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else if (e.changedTouches && e.changedTouches.length > 0) {
+      clientX = e.changedTouches[0].clientX;
+      clientY = e.changedTouches[0].clientY;
+    } else {
+      clientX = e.clientX;
+      clientY = e.clientY;
+    }
+
+    return {
+      x: (clientX - rect.left) * (W / rect.width),
+      y: (clientY - rect.top) * (H / rect.height)
+    };
+  }
+
+  function setDragTarget(pos) {
+    dragControl.hasTarget = true;
+    dragControl.x = clamp(pos.x, 35, W - 120);
+    dragControl.y = clamp(pos.y, 55, H - 85);
+  }
+
+  function difficulty() {
+    return level - 1;
+  }
+
+  function levelProgress() {
+    return score - levelStartScore;
+  }
+
+  function randomChallenge() {
+    return challengeList[Math.floor(Math.random() * challengeList.length)];
+  }
+
+  function currentObstacleSpeed() {
+    let speed = baseObstacleSpeed + difficulty() * 18;
+
+    if (currentChallenge && currentChallenge.id === "coinRush") {
+      speed += 15;
+    }
+
+    if (currentChallenge && currentChallenge.id === "speedWave") {
+      speed *= 1 + Math.sin(gameTime * 2.5) * 0.25;
+    }
+
+    return speed;
+  }
+
+  function currentGapHeight() {
+    let gap = 172 - difficulty() * 8;
+
+    if (currentChallenge && currentChallenge.id === "tightGap") {
+      gap -= 24;
+    }
+
+    return clamp(gap, isLandscape ? 118 : 126, 180);
+  }
+
+  function currentGravity() {
+    return gravityBase + difficulty() * 15;
+  }
+
+  function currentBattleScoreInterval() {
+    let interval = 0.85 - difficulty() * 0.07;
+
+    if (currentChallenge && currentChallenge.id === "ufoFrenzy") {
+      interval -= 0.08;
+    }
+
+    return clamp(interval, 0.42, 0.85);
+  }
+
+  function currentUfoMoveSpeed() {
+    let speed = 1.65 + difficulty() * 0.18;
+
+    if (currentChallenge && currentChallenge.id === "ufoFrenzy") {
+      speed += 0.35;
+    }
+
+    return speed;
+  }
+
+  function currentBulletMinSpeed() {
+    return 135 + difficulty() * 16;
+  }
+
+  function currentBulletMaxSpeed() {
+    return 185 + difficulty() * 22;
+  }
+
+  function currentShootMinTime() {
+    let value = 0.95 - difficulty() * 0.07;
+
+    if (currentChallenge && currentChallenge.id === "ufoFrenzy") {
+      value -= 0.15;
+    }
+
+    return clamp(value, 0.45, 0.95);
+  }
+
+  function currentShootMaxTime() {
+    let value = 1.55 - difficulty() * 0.08;
+
+    if (currentChallenge && currentChallenge.id === "ufoFrenzy") {
+      value -= 0.18;
+    }
+
+    return clamp(value, 0.75, 1.55);
+  }
+
+  function prepareLevel() {
+    levelTargetScore = levelStartScore + 150;
+    currentChallenge = randomChallenge();
+
+    player.x = startX();
+    player.y = H / 2;
+    player.vy = 0;
+    player.rotation = 0;
+    player.thrustTimer = 0;
+    player.hasCrown = crownUnlocked;
+    player.invulnTimer = 0;
+
+    dragControl.active = false;
+    dragControl.hasTarget = false;
+    dragControl.x = player.x;
+    dragControl.y = player.y;
+
+    ufo.active = false;
+    ufo.mode = "none";
+    ufo.x = W + 150;
+    ufo.y = H * 0.22;
+    ufo.targetX = W - 72;
+    ufo.targetY = H * 0.22;
+    ufo.moveTimer = 0;
+    ufo.shootTimer = 0;
+    ufo.wobble = 0;
+    ufo.patternIndex = 0;
+
+    finishPlanet.active = false;
+    finishPlanet.x = W + 120;
+    finishPlanet.y = H / 2;
+    finishPlanet.flagWave = 0;
+
+    obstacles = [];
+    bullets = [];
+    lasers = [];
+    items = [];
+    meteors = [];
+
+    shieldActive = false;
+    shieldTimer = 0;
+    slowMoTimer = 0;
+
+    battleMode = false;
+    finalMode = false;
+    battleScoreTimer = 0;
+    battleStarted = false;
+    finalStarted = false;
+    score50UfoSpawned = false;
+    bossHP = 50;
+
+    transitionActive = false;
+    transitionTimer = 0;
+    transitionFlash = 0;
+
+    spawnTimer = 0;
+    meteorTimer = 0;
+    obstacleIndex = 0;
+
+    state = "ready";
+
+    if (level >= 3) unlockAchievement("level3");
+    if (level >= 5) unlockAchievement("level5");
+  }
+
+  function startGame() {
+    initAudio();
+
+    level = 1;
+    levelStartScore = 0;
+    score = 0;
+    gameTime = 0;
+
+    prepareLevel();
+
+    unlockAchievement("firstLaunch");
+    playPowerSound();
+  }
+
+  function startNextLevel() {
+    level++;
+    levelStartScore = score;
+    prepareLevel();
+    playPowerSound();
+  }
+
+  function beginPlayingFromRocket() {
+    if (state !== "ready") return;
+
+    state = "playing";
+    player.x = startX();
+    player.y = H / 2;
+    player.vy = jumpPower;
+    player.rotation = -0.25;
+    player.thrustTimer = 0.2;
+
+    obstacles = [];
+    spawnTimer = 0;
+    obstacleIndex = 0;
+
+    spawnObstacle(W + 145);
+    playPowerSound();
+  }
+
+  function flap() {
+    if (transitionActive) return;
+
+    player.vy = jumpPower;
+    player.thrustTimer = 0.18;
+  }
+
+  function updateHighScore() {
+    if (score > highScore) {
+      highScore = score;
+      localStorage.setItem(STORAGE_KEY, highScore);
+    }
+  }
+
+  function resetHighScore() {
+    highScore = 0;
+    crownUnlocked = false;
+    player.hasCrown = false;
+
+    localStorage.setItem(STORAGE_KEY, "0");
+    localStorage.setItem(CROWN_KEY, "false");
+
+    playResetSound();
+  }
+
+  function useShieldOrLose() {
+    if (player.invulnTimer > 0) return true;
+
+    if (shieldActive) {
+      shieldActive = false;
+      shieldTimer = 0;
+      player.invulnTimer = 1.25;
+      unlockAchievement("shieldUse");
+      playPowerSound();
+      return true;
+    }
+
+    endGame();
+    return false;
+  }
+
+  function endGame() {
+    if (state === "gameover" || state === "win") return;
+
+    playCrashSound();
+    updateHighScore();
+    state = "gameover";
+
+    if (score >= 100) {
+      crownUnlocked = true;
+      localStorage.setItem(CROWN_KEY, "true");
+    }
+  }
+
+  function completeLevel() {
+    updateHighScore();
+
+    crownUnlocked = true;
+    player.hasCrown = true;
+    localStorage.setItem(CROWN_KEY, "true");
+
+    unlockAchievement("missionComplete");
+    playWinSound();
+
+    if (level >= MAX_LEVEL) {
+      state = "win";
+    } else {
+      state = "levelcomplete";
+    }
+  }
+
+  function spawnScore50Ufo() {
+    if (score50UfoSpawned) return;
+
+    score50UfoSpawned = true;
+
+    ufo.active = true;
+    ufo.mode = "passive";
+    ufo.x = W + 150;
+    ufo.y = player.y;
+    ufo.targetX = W - 72;
+    ufo.targetY = clamp(player.y, 90, H - 170);
+    ufo.moveTimer = 0;
+    ufo.shootTimer = 0;
+    ufo.wobble = 0;
+
+    unlockAchievement("score50");
+    playPowerSound();
+  }
+
+  function startBossTransition() {
+    if (transitionActive || battleStarted) return;
+
+    transitionActive = true;
+    transitionTimer = 3.0;
+    transitionFlash = 0;
+
+    obstacles = [];
+    items = [];
+    bullets = [];
+    lasers = [];
+    spawnTimer = 0;
+
+    ufo.active = true;
+    ufo.mode = "warning";
+    ufo.x = W + 150;
+    ufo.y = H * 0.22;
+    ufo.targetX = W - 85;
+    ufo.targetY = H * 0.22;
+    ufo.moveTimer = 0;
+    ufo.shootTimer = 0;
+    ufo.wobble = 0;
+
+    player.vy = 0;
+    player.hasCrown = true;
+
+    crownUnlocked = true;
+    localStorage.setItem(CROWN_KEY, "true");
+
+    unlockAchievement("score100");
+    playPowerSound();
+  }
+
+  function enterBattleMode() {
+    if (battleStarted) return;
+
+    transitionActive = false;
+    battleStarted = true;
+    battleMode = true;
+    finalMode = false;
+    battleScoreTimer = 0;
+    bossHP = 50;
+
+    obstacles = [];
+    items = [];
+    spawnTimer = 0;
+
+    ufo.active = true;
+    ufo.mode = "attack";
+    ufo.x = W + 120;
+    ufo.y = H * 0.22;
+    ufo.targetX = W - 78;
+    ufo.targetY = H * 0.22;
+    ufo.moveTimer = 0;
+    ufo.shootTimer = 1.1;
+    ufo.wobble = 0;
+    ufo.patternIndex = 0;
+
+    bullets = [];
+    lasers = [];
+
+    player.vy = 0;
+    player.hasCrown = true;
+
+    dragControl.active = false;
+    dragControl.hasTarget = true;
+    dragControl.x = player.x;
+    dragControl.y = player.y;
+
+    playPowerSound();
+  }
+
+  function enterFinalMode() {
+    if (finalStarted) return;
+
+    finalStarted = true;
+    battleMode = false;
+    finalMode = true;
+    transitionActive = false;
+
+    dragControl.active = false;
+    dragControl.hasTarget = false;
+
+    ufo.active = false;
+    ufo.mode = "none";
+
+    bullets = [];
+    lasers = [];
+    items = [];
+    obstacles = [];
+    meteors = [];
+    spawnTimer = 0;
+
+    finishPlanet.active = true;
+    finishPlanet.x = W + 130;
+    finishPlanet.y = H / 2;
+    finishPlanet.flagWave = 0;
+
+    score = Math.max(score, levelTargetScore);
+
+    playPowerSound();
+  }
+
+  function checkScoreMilestones() {
+    const progress = levelProgress();
+
+    if (progress >= 50 && progress < 100 && !score50UfoSpawned) {
+      spawnScore50Ufo();
+    }
+
+    if (progress >= 100 && !battleStarted && !transitionActive) {
+      startBossTransition();
+    }
+
+    if (progress >= 150 && !finalStarted) {
+      enterFinalMode();
+    }
+  }
+
+  function spawnObstacle(x) {
+    if (battleMode || finalMode || transitionActive) return;
+
+    const ratios = [0.42, 0.52, 0.36, 0.61, 0.47, 0.67];
+    const gapH = currentGapHeight();
+    const rawGapY = H * ratios[obstacleIndex % ratios.length];
+    const gapY = clamp(rawGapY, 85 + gapH / 2, H - 90 - gapH / 2);
+
+    const topLimit = gapY - gapH / 2;
+    const bottomStart = gapY + gapH / 2;
+
+    const obs = {
+      x,
+      gapY,
+      gapH,
+      passed: false,
+      planets: []
+    };
+
+    buildPlanetStack(obs, 20, topLimit - 12, "top");
+    buildPlanetStack(obs, bottomStart + 12, H - 60, "bottom");
+    obstacles.push(obs);
+
+    spawnItem(x + 20, gapY);
+    obstacleIndex++;
+  }
+
+  function buildPlanetStack(obs, startY, endY, side) {
+    const radius = isLandscape ? 23 : 25;
+    const surfaceGap = 14;
+    const step = radius * 2 + surfaceGap;
+
+    let cy = startY + radius;
+    let count = 0;
+
+    while (cy + radius <= endY) {
+      obs.planets.push({
+        ox: 0,
+        y: cy,
+        r: radius,
+        type: (obstacleIndex + count + (side === "bottom" ? 2 : 0)) % planetTypes.length
+      });
+
+      cy += step;
+      count++;
+    }
+  }
+
+  function spawnItem(x, gapY) {
+    let type = "coin";
+
+    if (obstacleIndex % 8 === 3) type = "shield";
+    else if (obstacleIndex % 10 === 6) type = "slow";
+    else type = "coin";
+
+    items.push({
+      x,
+      y: gapY + (obstacleIndex % 2 === 0 ? -34 : 34),
+      type,
+      r: type === "coin" ? 9 : 12,
+      taken: false,
+      spin: 0
+    });
+
+    if (currentChallenge && currentChallenge.id === "coinRush" && obstacleIndex % 2 === 0) {
+      items.push({
+        x: x + 55,
+        y: gapY,
+        type: "coin",
+        r: 9,
+        taken: false,
+        spin: 0
+      });
+    }
+  }
+
+  function spawnMeteor() {
+    meteors.push({
+      x: W + 40,
+      y: randomRange(80, H - 100),
+      r: randomRange(10, 17),
+      vx: -(150 + difficulty() * 25 + randomRange(0, 50)),
+      vy: randomRange(-30, 30),
+      spin: 0
+    });
+  }
+
+  function collectItem(item) {
+    if (item.taken) return;
+    item.taken = true;
+
+    if (item.type === "coin") {
+      starCoins++;
+      saveCoins();
+      playCoinSound();
+
+      if (starCoins >= 10) {
+        unlockAchievement("coin10");
+      }
+    }
+
+    if (item.type === "shield") {
+      shieldActive = true;
+      shieldTimer = 10;
+      playPowerSound();
+    }
+
+    if (item.type === "slow") {
+      slowMoTimer = 7;
+      unlockAchievement("slowUse");
+      playPowerSound();
+    }
+  }
+
+  function updatePlayerNormal(dt) {
+    player.vy += currentGravity() * dt;
+    player.y += player.vy * dt;
+    player.rotation = clamp(player.vy / 620, -0.45, 0.62);
+
+    if (player.thrustTimer > 0) {
+      player.thrustTimer -= dt;
+    }
+  }
+
+  function updatePlayerDrag(dt) {
+    const targetX = dragControl.hasTarget ? dragControl.x : player.x;
+    const targetY = dragControl.hasTarget ? dragControl.y : player.y;
+
+    const prevY = player.y;
+    const moveFactor = Math.min(1, dt * 8);
+
+    player.x += (targetX - player.x) * moveFactor;
+    player.y += (targetY - player.y) * moveFactor;
+
+    player.x = clamp(player.x, 35, W - 120);
+    player.y = clamp(player.y, 55, H - 85);
+
+    player.vy = (player.y - prevY) / Math.max(dt, 0.016);
+    player.rotation = clamp((targetY - player.y) / 140, -0.3, 0.3);
+
+    if (dragControl.active) {
+      player.thrustTimer = 0.08;
+    } else if (player.thrustTimer > 0) {
+      player.thrustTimer -= dt;
+    }
+  }
+
+  function updateTimers(dt) {
+    if (player.invulnTimer > 0) {
+      player.invulnTimer -= dt;
+    }
+
+    if (shieldActive && shieldTimer > 0) {
+      shieldTimer -= dt;
+
+      if (shieldTimer <= 0) {
+        shieldActive = false;
+        shieldTimer = 0;
+      }
+    }
+
+    if (slowMoTimer > 0) {
+      slowMoTimer -= dt;
+
+      if (slowMoTimer <= 0) {
+        slowMoTimer = 0;
+      }
+    }
+
+    for (const pop of achievementPopups) {
+      pop.timer -= dt;
+    }
+
+    while (achievementPopups.length && achievementPopups[0].timer <= 0) {
+      achievementPopups.shift();
+    }
+  }
+
+  function update(dt) {
+    gameTime += dt;
+    bgScroll += dt * (state === "playing" ? 38 : 13);
+    updateTimers(dt);
+
+    if (state === "ready") {
+      readyTimer += dt;
+      player.thrustTimer = 0.12;
+      return;
+    }
+
+    if (state !== "playing") return;
+
+    checkScoreMilestones();
+
+    if (transitionActive) {
+      updateBossTransition(dt);
+      return;
+    }
+
+    if (battleMode) {
+      updatePlayerDrag(dt);
+      updateBattleMode(dt);
+    } else {
+      updatePlayerNormal(dt);
+
+      if (finalMode) {
+        updateFinalMode(dt);
+      } else {
+        updatePlanetMode(dt);
+        updatePassiveUfo(dt);
+      }
+    }
+
+    updateMeteors(dt);
+
+    if (player.y - player.r < 0 || player.y + player.r > H - 48) {
+      useShieldOrLose();
+    }
+  }
+
+  function updateBossTransition(dt) {
+    transitionTimer -= dt;
+    transitionFlash += dt * 8;
+
+    player.vy = 0;
+    player.y += Math.sin(transitionFlash) * 0.35;
+    player.rotation = Math.sin(transitionFlash * 0.6) * 0.08;
+
+    ufo.x += (ufo.targetX - ufo.x) * dt * 1.4;
+    ufo.y += (ufo.targetY - ufo.y) * dt * 1.4;
+
+    if (transitionTimer <= 0) {
+      enterBattleMode();
+    }
+  }
+
+  function updatePlanetMode(dt) {
+    const slowFactor = slowMoTimer > 0 ? 0.55 : 1;
+    const speed = currentObstacleSpeed() * slowFactor;
+
+    spawnTimer += dt;
+
+    if (spawnTimer >= spawnInterval) {
+      spawnTimer -= spawnInterval;
+      spawnObstacle(W + 100);
+    }
+
+    for (const obs of obstacles) {
+      obs.x -= speed * dt;
+
+      if (!obs.passed && obs.x + 35 < player.x) {
+        obs.passed = true;
+        score++;
+        playScoreSound();
+        checkScoreMilestones();
+      }
+
+      for (const p of obs.planets) {
+        const px = obs.x + p.ox;
+        const py = p.y;
+        const dist = Math.hypot(player.x - px, player.y - py);
+
+        if (dist < player.r + p.r * 0.82) {
+          if (!useShieldOrLose()) return;
+        }
+      }
+    }
+
+    for (const item of items) {
+      item.x -= speed * dt;
+      item.spin += dt * 6;
+
+      const dist = Math.hypot(player.x - item.x, player.y - item.y);
+
+      if (!item.taken && dist < player.r + item.r + 5) {
+        collectItem(item);
+      }
+    }
+
+    obstacles = obstacles.filter(obs => obs.x > -100);
+    items = items.filter(item => item.x > -40 && !item.taken);
+  }
+
+  function updatePassiveUfo(dt) {
+    if (!ufo.active || ufo.mode !== "passive") return;
+
+    const speedFactor = slowMoTimer > 0 ? 0.65 : 1;
+
+    ufo.wobble += dt * 4;
+    ufo.moveTimer -= dt;
+
+    if (ufo.moveTimer <= 0) {
+      ufo.targetX = randomRange(W - 130, W - 60);
+      ufo.targetY = randomRange(90, H - 170);
+      ufo.moveTimer = randomRange(0.8, 1.6);
+    }
+
+    ufo.x += (ufo.targetX - ufo.x) * dt * 1.8 * speedFactor;
+    ufo.y += (ufo.targetY - ufo.y) * dt * 1.8 * speedFactor;
+    ufo.y += Math.sin(ufo.wobble) * 0.25;
+  }
+
+  function updateBattleMode(dt) {
+    obstacles = [];
+    items = [];
+
+    battleScoreTimer += dt;
+
+    if (battleScoreTimer >= currentBattleScoreInterval()) {
+      battleScoreTimer -= currentBattleScoreInterval();
+      score++;
+      bossHP = Math.max(0, levelTargetScore - score);
+      playScoreSound();
+
+      if (score >= levelTargetScore) {
+        enterFinalMode();
+        return;
+      }
+    }
+
+    updateUfoAttack(dt);
+    updateBullets(dt);
+    updateLasers(dt);
+  }
+
+  function updateUfoAttack(dt) {
+    if (!ufo.active || ufo.mode !== "attack") return;
+
+    const speedFactor = slowMoTimer > 0 ? 0.55 : 1;
+
+    ufo.wobble += dt * 4;
+    ufo.moveTimer -= dt;
+    ufo.shootTimer -= dt;
+
+    if (ufo.moveTimer <= 0) {
+      ufo.targetX = randomRange(W - 145, W - 62);
+      ufo.targetY = randomRange(85, H - 180);
+      ufo.moveTimer = randomRange(0.75, 1.55);
+    }
+
+    ufo.x += (ufo.targetX - ufo.x) * dt * currentUfoMoveSpeed() * speedFactor;
+    ufo.y += (ufo.targetY - ufo.y) * dt * currentUfoMoveSpeed() * speedFactor;
+    ufo.y += Math.sin(ufo.wobble) * 0.18;
+
+    if (ufo.shootTimer <= 0) {
+      shootBossPattern();
+      ufo.shootTimer = randomRange(currentShootMinTime(), currentShootMaxTime());
+    }
+  }
+
+  function shootBossPattern() {
+    const patternCount = level >= 4 ? 5 : 4;
+    const pattern = ufo.patternIndex % patternCount;
+    ufo.patternIndex++;
+
+    if (pattern === 0) {
+      shootBulletAt(player.x, player.y, randomRange(currentBulletMinSpeed(), currentBulletMaxSpeed()));
+    }
+
+    if (pattern === 1) {
+      shootSpread();
+    }
+
+    if (pattern === 2) {
+      shootBurst();
+    }
+
+    if (pattern === 3) {
+      createLaserWarning();
+    }
+
+    if (pattern === 4) {
+      shootDoubleWave();
+    }
+
+    playShootSound();
+  }
+
+  function shootBulletAt(targetX, targetY, speed) {
+    const fromX = ufo.x - 60;
+    const fromY = ufo.y + 30;
+
+    const dx = targetX - fromX;
+    const dy = targetY - fromY;
+    const len = Math.hypot(dx, dy) || 1;
+
+    bullets.push({
+      x: fromX,
+      y: fromY,
+      vx: (dx / len) * speed,
+      vy: (dy / len) * speed,
+      r: 5,
+      life: 4.2
+    });
+  }
+
+  function shootSpread() {
+    const fromX = ufo.x - 60;
+    const fromY = ufo.y + 30;
+
+    const dx = player.x - fromX;
+    const dy = player.y - fromY;
+    const base = Math.atan2(dy, dx);
+
+    [-0.28, 0, 0.28].forEach(offset => {
+      const angle = base + offset;
+      const speed = randomRange(currentBulletMinSpeed(), currentBulletMaxSpeed());
+
+      bullets.push({
+        x: fromX,
+        y: fromY,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        r: 5,
+        life: 4.2
+      });
+    });
+  }
+
+  function shootBurst() {
+    shootBulletAt(player.x, player.y - 25, currentBulletMinSpeed() + 10);
+    shootBulletAt(player.x, player.y, currentBulletMaxSpeed());
+    shootBulletAt(player.x, player.y + 25, currentBulletMinSpeed() + 10);
+  }
+
+  function shootDoubleWave() {
+    shootBulletAt(player.x, player.y - 45, currentBulletMinSpeed() + 20);
+    shootBulletAt(player.x, player.y + 45, currentBulletMinSpeed() + 20);
+    createLaserWarning();
+  }
+
+  function createLaserWarning() {
+    lasers.push({
+      y: clamp(player.y, 85, H - 95),
+      warn: 0.75,
+      active: 0.34,
+      life: 1.09
+    });
+  }
+
+  function updateBullets(dt) {
+    const speedFactor = slowMoTimer > 0 ? 0.55 : 1;
+
+    for (const b of bullets) {
+      b.x += b.vx * dt * speedFactor;
+      b.y += b.vy * dt * speedFactor;
+      b.life -= dt;
+
+      const dist = Math.hypot(player.x - b.x, player.y - b.y);
+
+      if (dist < player.r + b.r + 3) {
+        if (!useShieldOrLose()) return;
+        b.life = 0;
+      }
+    }
+
+    bullets = bullets.filter(b =>
+      b.life > 0 &&
+      b.x > -30 &&
+      b.x < W + 60 &&
+      b.y > -30 &&
+      b.y < H + 60
+    );
+  }
+
+  function updateLasers(dt) {
+    for (const l of lasers) {
+      l.life -= dt;
+
+      if (l.warn > 0) {
+        l.warn -= dt;
+      } else if (l.active > 0) {
+        l.active -= dt;
+
+        if (Math.abs(player.y - l.y) < 12 && player.x < ufo.x - 25) {
+          if (!useShieldOrLose()) return;
+          l.active = 0;
+        }
+      }
+    }
+
+    lasers = lasers.filter(l => l.life > 0);
+  }
+
+  function updateMeteors(dt) {
+    const shouldSpawnMeteor =
+      currentChallenge &&
+      currentChallenge.id === "meteorZone" &&
+      state === "playing" &&
+      !finalMode &&
+      !transitionActive;
+
+    if (shouldSpawnMeteor) {
+      meteorTimer += dt;
+
+      const meteorInterval = clamp(1.9 - difficulty() * 0.18, 0.8, 1.9);
+
+      if (meteorTimer >= meteorInterval) {
+        meteorTimer = 0;
+        spawnMeteor();
+      }
+    }
+
+    const slowFactor = slowMoTimer > 0 ? 0.55 : 1;
+
+    for (const m of meteors) {
+      m.x += m.vx * dt * slowFactor;
+      m.y += m.vy * dt * slowFactor;
+      m.spin += dt * 6;
+
+      const dist = Math.hypot(player.x - m.x, player.y - m.y);
+
+      if (dist < player.r + m.r) {
+        if (!useShieldOrLose()) return;
+        m.x = -100;
+      }
+    }
+
+    meteors = meteors.filter(m => m.x > -80 && m.y > -80 && m.y < H + 80);
+  }
+
+  function updateFinalMode(dt) {
+    bullets = [];
+    lasers = [];
+    obstacles = [];
+    items = [];
+    meteors = [];
+    ufo.active = false;
+
+    finishPlanet.flagWave += dt * 5;
+
+    const stopX = player.x + 28;
+
+    if (finishPlanet.x > stopX) {
+      finishPlanet.x -= (85 + difficulty() * 7) * dt;
+    } else {
+      finishPlanet.x = stopX;
+      finishPlanet.y += Math.sin(finishPlanet.flagWave) * 0.25;
+    }
+
+    const dist = Math.hypot(player.x - finishPlanet.x, player.y - finishPlanet.y);
+
+    if (dist < player.r + finishPlanet.r * 0.82) {
+      completeLevel();
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    drawSpaceBackground();
+
+    if (state === "menu") {
+      drawMenu();
+    } else if (state === "ready") {
+      drawReadyScreen();
+    } else if (state === "description") {
+      drawDescription();
+    } else if (state === "skins") {
+      drawSkinShop();
+    } else if (state === "achievements") {
+      drawAchievements();
+    } else if (state === "playing") {
+      drawGame();
+    } else if (state === "paused") {
+      drawGame();
+      drawPauseMenu();
+    } else if (state === "gameover") {
+      drawGame();
+      drawGameOver();
+    } else if (state === "levelcomplete") {
+      drawGame();
+      drawLevelComplete();
+    } else if (state === "win") {
+      drawGame();
+      drawWinScreen();
+    }
+
+    drawAchievementPopup();
+  }
+
+  function drawSpaceBackground() {
+    const purpleMode = score >= levelStartScore + 100 &&
+      (state === "playing" || state === "paused" || state === "gameover" || state === "win" || state === "levelcomplete");
+
+    const gradient = ctx.createLinearGradient(0, 0, 0, H);
+
+    if (purpleMode) {
+      gradient.addColorStop(0, "#170018");
+      gradient.addColorStop(0.35, "#3b073f");
+      gradient.addColorStop(0.7, "#65115f");
+      gradient.addColorStop(1, "#1b062d");
+    } else {
+      gradient.addColorStop(0, "#020616");
+      gradient.addColorStop(0.55, "#061126");
+      gradient.addColorStop(1, "#070515");
+    }
+
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, W, H);
+
+    for (const s of stars) {
+      const x = ((s.x - bgScroll * s.speed) % W + W) % W;
+      const y = s.y;
+
+      ctx.fillStyle = purpleMode
+        ? (s.bright ? "#ffd6ff" : "#ff72d2")
+        : (s.bright ? "#ffffff" : "#7897d9");
+
+      ctx.fillRect(Math.floor(x), Math.floor(y), s.size, s.size);
+
+      if (s.size >= 2 && s.bright) {
+        ctx.fillRect(Math.floor(x) - 3, Math.floor(y), 2, 1);
+        ctx.fillRect(Math.floor(x) + 4, Math.floor(y), 2, 1);
+        ctx.fillRect(Math.floor(x), Math.floor(y) - 3, 1, 2);
+        ctx.fillRect(Math.floor(x), Math.floor(y) + 4, 1, 2);
+      }
+    }
+
+    if (purpleMode) {
+      drawPixelGalaxy(72 - (bgScroll * 0.18 % 460), 120, "#ff4fd8", "#ffb3f4");
+      drawPixelGalaxy(W - 120 - (bgScroll * 0.14 % 480), 95, "#9b4dff", "#e38bff");
+    } else {
+      drawPixelGalaxy(72 - (bgScroll * 0.18 % 460), 120, "#b64cff", "#ff78d5");
+      drawPixelGalaxy(W - 120 - (bgScroll * 0.14 % 480), 95, "#3478ff", "#63d7ff");
+    }
+
+    drawMoonGround(purpleMode);
+  }
+
+  function drawPixelGalaxy(x, y, c1, c2) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(-0.4);
+
+    ctx.fillStyle = "rgba(255,255,255,0.15)";
+    ctx.fillRect(-32, -2, 64, 4);
+
+    ctx.fillStyle = c1;
+    ctx.fillRect(-26, -6, 52, 6);
+    ctx.fillRect(-18, -12, 36, 6);
+    ctx.fillRect(-10, -18, 20, 6);
+    ctx.fillRect(-8, 8, 16, 5);
+
+    ctx.fillStyle = c2;
+    ctx.fillRect(-10, -5, 20, 5);
+    ctx.fillRect(-5, -10, 10, 5);
+
+    ctx.restore();
+  }
+
+  function drawMoonGround(purpleMode = false) {
+    const baseY = H - 42;
+
+    ctx.fillStyle = purpleMode ? "#3a165d" : "#2b1d63";
+    ctx.beginPath();
+    ctx.moveTo(0, baseY + 18);
+    ctx.lineTo(0, baseY - 8);
+    ctx.lineTo(W * 0.1, baseY - 20);
+    ctx.lineTo(W * 0.2, baseY - 2);
+    ctx.lineTo(W * 0.32, baseY - 25);
+    ctx.lineTo(W * 0.45, baseY - 8);
+    ctx.lineTo(W * 0.57, baseY - 32);
+    ctx.lineTo(W * 0.7, baseY - 7);
+    ctx.lineTo(W * 0.82, baseY - 26);
+    ctx.lineTo(W, baseY - 10);
+    ctx.lineTo(W, H);
+    ctx.lineTo(0, H);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = purpleMode ? "#582a88" : "#3c2a86";
+    ctx.fillRect(0, baseY + 12, W, 30);
+
+    ctx.fillStyle = purpleMode ? "#24103f" : "#1c1747";
+    ctx.fillRect(22, baseY + 6, 34, 11);
+    ctx.fillRect(W * 0.37, baseY + 16, 28, 8);
+    ctx.fillRect(W * 0.72, baseY + 10, 42, 10);
+    ctx.fillRect(W - 45, baseY + 22, 26, 7);
+  }
+
+  function drawReadyScreen() {
+    const floatY = Math.sin(readyTimer * 3) * 3;
+
+    if (isLandscape) {
+      drawAstronautRocketReference(W * 0.32, H * 0.56 + floatY, 0.50);
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 28px Courier New";
+      ctx.fillText("READY TO LAUNCH", W * 0.68, 128);
+
+      ctx.fillStyle = "#ffd84a";
+      ctx.font = "bold 18px Courier New";
+      ctx.fillText("LEVEL " + level + " / " + MAX_LEVEL, W * 0.68, 170);
+
+      ctx.fillStyle = "#a9c3ff";
+      ctx.font = "bold 14px Courier New";
+      ctx.fillText("CHALLENGE: " + currentChallenge.name, W * 0.68, 202);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 12px Courier New";
+      ctx.fillText(currentChallenge.desc, W * 0.68, 226);
+
+      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      ctx.fillRect(W * 0.68 - 150, 280, 300, 95);
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(W * 0.68 - 150, 280, 300, 95);
+
+      ctx.fillStyle = "#ffd84a";
+      ctx.font = "bold 15px Courier New";
+      ctx.fillText("TAP / KLIK / SPACE", W * 0.68, 315);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 12px Courier New";
+      ctx.fillText("UNTUK LEPAS DARI ROKET", W * 0.68, 342);
+      ctx.fillText("DAN MULAI TERBANG", W * 0.68, 363);
+      return;
+    }
+
+    drawAstronautRocketReference(W / 2, 292 + floatY, 0.57);
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 24px Courier New";
+    ctx.fillText("READY TO LAUNCH", W / 2, 88);
+
+    ctx.fillStyle = "#ffd84a";
+    ctx.font = "bold 15px Courier New";
+    ctx.fillText("LEVEL " + level + " / " + MAX_LEVEL, W / 2, 120);
+
+    ctx.fillStyle = "#a9c3ff";
+    ctx.font = "bold 12px Courier New";
+    ctx.fillText("CHALLENGE: " + currentChallenge.name, W / 2, 145);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 10px Courier New";
+    ctx.fillText(currentChallenge.desc, W / 2, 166);
+
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.fillRect(35, 420, W - 70, 94);
+
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(35, 420, W - 70, 94);
+
+    ctx.fillStyle = "#ffd84a";
+    ctx.font = "bold 15px Courier New";
+    ctx.fillText("TAP / KLIK / SPACE", W / 2, 455);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 12px Courier New";
+    ctx.fillText("UNTUK LEPAS DARI ROKET", W / 2, 482);
+    ctx.fillText("DAN MULAI TERBANG", W / 2, 503);
+  }
+
+  function drawGame() {
+    if (!battleMode && !finalMode && !transitionActive) {
+      for (const obs of obstacles) {
+        drawObstacle(obs);
+      }
+
+      for (const item of items) {
+        drawItem(item);
+      }
+    }
+
+    drawMeteors();
+
+    if (finishPlanet.active) {
+      drawFinishPlanet(finishPlanet.x, finishPlanet.y, finishPlanet.r);
+      drawFinishGuide();
+    }
+
+    if (ufo.active) {
+      drawUfoWarning();
+      drawUfo(ufo.x, ufo.y, 0.75);
+    }
+
+    drawLasers();
+    drawBullets();
+
+    if (transitionActive) {
+      drawBossTransition();
+    }
+
+    if (battleMode) {
+      drawDragHint();
+      drawBossHP();
+    }
+
+    drawAstronaut(
+      player.x,
+      player.y,
+      0.88,
+      player.rotation,
+      player.thrustTimer > 0,
+      player.hasCrown
+    );
+
+    if (shieldActive) {
+      drawShieldEffect(player.x, player.y);
+    }
+
+    if (player.invulnTimer > 0) {
+      drawInvulnEffect(player.x, player.y);
+    }
+
+    drawHUD();
+  }
+
+  function drawObstacle(obs) {
+    for (const p of obs.planets) {
+      const px = obs.x + p.ox;
+      drawPlanet(px, p.y, p.r, planetTypes[p.type]);
+    }
+  }
+
+  function drawPlanet(cx, cy, r, palette) {
+    const pixel = 4;
+
+    if (palette.ring) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(-0.23);
+
+      ctx.fillStyle = "#6cc9ff";
+      ctx.fillRect(-r - 18, -4, (r + 18) * 2, 5);
+
+      ctx.fillStyle = "#1a5795";
+      ctx.fillRect(-r - 12, 3, (r + 12) * 2, 4);
+
+      ctx.restore();
+    }
+
+    for (let y = -r; y <= r; y += pixel) {
+      const rowWidth = Math.floor(Math.sqrt(Math.max(0, r * r - y * y)) * 2 / pixel) * pixel;
+      const x = cx - rowWidth / 2;
+
+      ctx.fillStyle = palette.base;
+      ctx.fillRect(Math.round(x), Math.round(cy + y), rowWidth, pixel);
+    }
+
+    ctx.fillStyle = palette.dark;
+
+    for (let y = r * 0.2; y < r; y += pixel) {
+      const rowWidth = Math.floor(Math.sqrt(Math.max(0, r * r - y * y)) * 2 / pixel) * pixel;
+      ctx.fillRect(Math.round(cx - rowWidth / 2), Math.round(cy + y), rowWidth, pixel);
+    }
+
+    ctx.fillStyle = palette.stripe;
+    ctx.fillRect(Math.round(cx - r * 0.7), Math.round(cy - r * 0.35), Math.round(r * 1.35), 5);
+    ctx.fillRect(Math.round(cx - r * 0.85), Math.round(cy - r * 0.05), Math.round(r * 1.65), 5);
+
+    ctx.fillStyle = palette.light;
+    ctx.fillRect(Math.round(cx - r * 0.45), Math.round(cy - r * 0.55), Math.round(r * 0.6), 5);
+    ctx.fillRect(Math.round(cx - r * 0.65), Math.round(cy - r * 0.25), Math.round(r * 0.45), 4);
+
+    ctx.fillStyle = palette.crater;
+    ctx.fillRect(Math.round(cx + r * 0.18), Math.round(cy - r * 0.25), 8, 8);
+    ctx.fillRect(Math.round(cx - r * 0.45), Math.round(cy + r * 0.15), 7, 7);
+    ctx.fillRect(Math.round(cx + r * 0.35), Math.round(cy + r * 0.22), 6, 6);
+  }
+
+  function drawItem(item) {
+    if (item.taken) return;
+
+    ctx.save();
+    ctx.translate(item.x, item.y);
+
+    if (item.type === "coin") {
+      ctx.fillStyle = "#5f4300";
+      ctx.fillRect(-8, -8, 16, 16);
+
+      ctx.fillStyle = "#ffd84a";
+      ctx.fillRect(-6, -6, 12, 12);
+
+      ctx.fillStyle = "#fff48a";
+      ctx.fillRect(-2, -8, 4, 16);
+      ctx.fillRect(-8, -2, 16, 4);
+    }
+
+    if (item.type === "shield") {
+      ctx.fillStyle = "#0a345f";
+      ctx.fillRect(-11, -11, 22, 22);
+      ctx.fillStyle = "#55d7ff";
+      ctx.fillRect(-8, -8, 16, 16);
+      ctx.fillStyle = "#d8ffff";
+      ctx.fillRect(-3, -10, 6, 20);
+      ctx.fillRect(-10, -3, 20, 6);
+    }
+
+    if (item.type === "slow") {
+      ctx.fillStyle = "#35215f";
+      ctx.fillRect(-11, -11, 22, 22);
+      ctx.fillStyle = "#c77dff";
+      ctx.fillRect(-8, -8, 16, 16);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(-2, -8, 4, 12);
+      ctx.fillRect(0, 1, 8, 4);
+    }
+
+    ctx.restore();
+  }
+
+  function drawMeteors() {
+    for (const m of meteors) {
+      ctx.save();
+      ctx.translate(m.x, m.y);
+      ctx.rotate(m.spin);
+
+      ctx.fillStyle = "#41261a";
+      ctx.fillRect(-m.r, -m.r, m.r * 2, m.r * 2);
+
+      ctx.fillStyle = "#a04f27";
+      ctx.fillRect(-m.r + 4, -m.r + 4, m.r * 2 - 8, m.r * 2 - 8);
+
+      ctx.fillStyle = "#ff9c25";
+      ctx.fillRect(-m.r - 16, -4, 16, 8);
+
+      ctx.fillStyle = "#ffd94a";
+      ctx.fillRect(-m.r - 26, -2, 12, 5);
+
+      ctx.restore();
+    }
+  }
+
+  function drawFinishPlanet(cx, cy, r) {
+    drawPlanet(cx, cy, r, finishPlanetPalette);
+
+    ctx.fillStyle = "#e8e8e8";
+    ctx.fillRect(Math.round(cx + 18), Math.round(cy - 62), 4, 42);
+
+    ctx.fillStyle = "#ffd400";
+    ctx.fillRect(Math.round(cx + 22), Math.round(cy - 62), 30, 9);
+    ctx.fillRect(Math.round(cx + 22), Math.round(cy - 53), 22, 8);
+    ctx.fillRect(Math.round(cx + 22), Math.round(cy - 45), 14, 7);
+
+    ctx.fillStyle = "#8f6f00";
+    ctx.fillRect(Math.round(cx + 22), Math.round(cy - 36), 5, 5);
+  }
+
+  function drawFinishGuide() {
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffd400";
+    ctx.font = "bold 12px Courier New";
+    ctx.fillText("FINISH: ARAHKAN KE PLANET BENDERA", W / 2, 86);
+  }
+
+  function drawBullets() {
+    for (const b of bullets) {
+      ctx.fillStyle = "#ffec5c";
+      ctx.fillRect(Math.round(b.x - 5), Math.round(b.y - 5), 10, 10);
+
+      ctx.fillStyle = "#ff5cbb";
+      ctx.fillRect(Math.round(b.x - 3), Math.round(b.y - 3), 6, 6);
+
+      ctx.fillStyle = "rgba(255, 236, 92, 0.35)";
+      ctx.fillRect(Math.round(b.x - 10), Math.round(b.y - 2), 8, 4);
+    }
+  }
+
+  function drawLasers() {
+    for (const l of lasers) {
+      if (l.warn > 0) {
+        ctx.fillStyle = "rgba(255, 60, 120, 0.35)";
+        ctx.fillRect(0, l.y - 2, W, 4);
+
+        ctx.fillStyle = "#ffec5c";
+        ctx.font = "bold 10px Courier New";
+        ctx.textAlign = "left";
+        ctx.fillText("LASER WARNING", 15, l.y - 10);
+      } else if (l.active > 0) {
+        ctx.fillStyle = "rgba(255, 30, 110, 0.9)";
+        ctx.fillRect(0, l.y - 8, W, 16);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, l.y - 2, W, 4);
+      }
+    }
+  }
+
+  function drawShieldEffect(x, y) {
+    ctx.strokeStyle = "rgba(95, 230, 255, 0.85)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(x, y, 30, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.45)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(x, y, 36, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  function drawInvulnEffect(x, y) {
+    if (Math.floor(player.invulnTimer * 12) % 2 === 0) {
+      ctx.strokeStyle = "rgba(255,255,255,0.8)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, 24, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  function drawDragHint() {
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(255, 236, 92, 0.9)";
+    ctx.font = "bold 11px Courier New";
+    ctx.fillText("DRAG ASTRONAUT UNTUK MENGHINDAR", W / 2, H - 78);
+  }
+
+  function drawBossTransition() {
+    ctx.fillStyle = "rgba(0,0,0,0.40)";
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = "center";
+
+    ctx.fillStyle = Math.floor(transitionFlash) % 2 === 0 ? "#ffec5c" : "#ff4fd8";
+    ctx.font = "bold 25px Courier New";
+    ctx.fillText("UFO ATTACK", W / 2, H / 2 - 40);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 13px Courier New";
+    ctx.fillText("BOSS UFO TERDETEKSI", W / 2, H / 2 - 10);
+    ctx.fillText("MODE KONTROL BERUBAH: SERET", W / 2, H / 2 + 14);
+  }
+
+  function drawBossHP() {
+    const maxHP = 50;
+    const currentHP = clamp(bossHP, 0, maxHP);
+    const barW = isLandscape ? 210 : 170;
+    const barH = 12;
+    const x = W / 2 - barW / 2;
+    const y = 105;
+
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fillRect(x - 8, y - 20, barW + 16, 36);
+
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, barW, barH);
+
+    ctx.fillStyle = "#ff3f7c";
+    ctx.fillRect(x + 2, y + 2, (barW - 4) * (currentHP / maxHP), barH - 4);
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 11px Courier New";
+    ctx.fillText("BOSS UFO HP", W / 2, y - 6);
+  }
+
+  function drawAstronautRocketReference(x, y, scale = 1) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(-0.42);
+    ctx.scale(scale, scale);
+
+    drawPixelRocketBody(0, 42, 1.02, true);
+    drawSittingAstronaut(-8, -38, 0.84, player.hasCrown);
+
+    ctx.restore();
+  }
+
+  function drawPixelRocketBody(x, y, scale = 1, fire = true) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(scale, scale);
+
+    const p = (x, y, w, h, color) => {
+      ctx.fillStyle = color;
+      ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+    };
+
+    const outline = "#132033";
+
+    if (fire) {
+      p(-105, 16, 18, 14, "#d92a16");
+      p(-121, 19, 28, 20, "#ff4f1f");
+      p(-139, 25, 34, 23, "#ff9c25");
+      p(-153, 32, 34, 23, "#ffd94a");
+      p(-132, 41, 27, 16, "#ff7a1f");
+      p(-112, 34, 22, 16, "#ff5a1f");
+    }
+
+    p(-92, -10, 22, 24, outline);
+    p(-86, -6, 17, 18, "#f52b20");
+    p(-100, 1, 24, 18, outline);
+    p(-94, 4, 19, 13, "#ff4d35");
+
+    p(-70, -30, 104, 12, outline);
+    p(-82, -18, 132, 18, outline);
+    p(-88, 0, 146, 28, outline);
+    p(-76, 28, 124, 28, outline);
+    p(-52, 56, 76, 18, outline);
+
+    p(-65, -25, 96, 12, "#fff7e6");
+    p(-77, -13, 126, 18, "#fff7e6");
+    p(-83, 5, 138, 22, "#fff7e6");
+    p(-71, 27, 116, 24, "#ded8cf");
+    p(-47, 51, 68, 14, "#cfcbd0");
+
+    p(30, -20, 28, 20, outline);
+    p(36, -17, 22, 18, "#f52b20");
+    p(52, -12, 14, 24, outline);
+    p(55, -9, 10, 20, "#f52b20");
+    p(35, 1, 28, 16, "#c91d1d");
+    p(41, -14, 15, 4, "#ff4d35");
+
+    p(-26, -3, 36, 36, outline);
+    p(-20, 3, 25, 25, "#c91d1d");
+    p(-15, 8, 17, 17, "#1272b5");
+    p(-11, 4, 19, 19, "#0b4368");
+    p(-8, 7, 16, 16, "#27baf1");
+    p(-4, 4, 7, 10, "#8deaff");
+
+    p(-73, 18, 26, 18, outline);
+    p(-70, 21, 22, 14, "#f52b20");
+    p(-83, 34, 28, 23, outline);
+    p(-78, 37, 23, 18, "#f52b20");
+
+    p(-10, 54, 28, 18, outline);
+    p(-6, 57, 22, 14, "#f52b20");
+    p(-16, 69, 26, 24, outline);
+    p(-12, 72, 21, 18, "#c91d1d");
+
+    p(-84, -20, 54, 7, "#fffdf4");
+    p(-79, -16, 40, 5, "#ece8df");
+
+    p(-60, 59, 65, 6, outline);
+
+    ctx.restore();
+  }
+
+  function drawSittingAstronaut(x, y, scale = 1, crown = false, skin = equippedSkin) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(scale, scale);
+
+    const pal = skinPalette(skin);
+
+    const p = (x, y, w, h, color) => {
+      ctx.fillStyle = color;
+      ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+    };
+
+    const outline = "#152033";
+
+    if (crown) {
+      p(-14, -69, 28, 5, "#8f5c00");
+      p(-12, -78, 6, 12, "#ffd84a");
+      p(-2, -83, 6, 17, "#fff06a");
+      p(9, -78, 6, 12, "#ffd84a");
+      p(-15, -64, 30, 4, "#d79419");
+    }
+
+    p(-35, -57, 70, 9, outline);
+    p(-43, -48, 86, 12, outline);
+    p(-49, -36, 98, 42, outline);
+    p(-42, 6, 84, 15, outline);
+
+    p(-32, -54, 64, 9, pal.suit);
+    p(-39, -45, 78, 12, pal.suit);
+    p(-45, -33, 90, 36, pal.suit);
+    p(-37, 3, 74, 14, pal.suitDark);
+
+    p(-31, -42, 62, 42, pal.visor);
+    p(-20, -36, 18, 16, "#d8edff");
+    p(16, -34, 9, 21, pal.visorLight);
+    p(10, -10, 7, 7, "#d8edff");
+
+    p(-32, 20, 64, 55, outline);
+    p(-25, 24, 50, 45, pal.suit);
+    p(-21, 69, 42, 10, pal.shade);
+
+    p(-13, 34, 26, 21, pal.blue);
+    p(-8, 39, 16, 9, "#8adfff");
+
+    p(-57, 0, 20, 65, outline);
+    p(-53, 5, 15, 56, "#8a8d96");
+
+    p(-64, 8, 34, 18, outline);
+    p(-60, 12, 27, 13, pal.suit);
+    p(-35, 14, 27, 32, outline);
+    p(-31, 18, 22, 27, pal.suit);
+
+    p(31, -3, 22, 50, outline);
+    p(34, 1, 17, 43, pal.suit);
+    p(50, -20, 20, 31, outline);
+    p(53, -17, 16, 25, pal.suit);
+    p(66, -34, 19, 24, outline);
+    p(69, -31, 14, 18, "#969ba5");
+
+    p(-14, 73, 25, 35, outline);
+    p(-10, 76, 20, 30, pal.suit);
+    p(-17, 103, 30, 11, pal.shade);
+
+    p(12, 70, 39, 23, outline);
+    p(16, 74, 33, 18, pal.suit);
+    p(45, 79, 16, 12, pal.suitDark);
+
+    p(30, 92, 35, 17, outline);
+    p(33, 95, 30, 13, pal.suitDark);
+
+    ctx.restore();
+  }
+
+  function drawUfo(x, y, scale) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(scale, scale);
+
+    const p = (x, y, w, h, color) => {
+      ctx.fillStyle = color;
+      ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+    };
+
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = "#ffe94a";
+    ctx.beginPath();
+    ctx.moveTo(-20, 30);
+    ctx.lineTo(20, 30);
+    ctx.lineTo(48, 118);
+    ctx.lineTo(-48, 118);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    p(-38, -52, 76, 7, "#281538");
+    p(-48, -45, 96, 8, "#281538");
+    p(-54, -37, 108, 8, "#281538");
+
+    p(-34, -49, 68, 8, "#56c7ef");
+    p(-42, -41, 84, 8, "#65d8ff");
+    p(-48, -33, 96, 8, "#55bce1");
+    p(-42, -25, 84, 8, "#36a6d4");
+
+    p(-25, -47, 11, 8, "#b9f2ff");
+    p(-34, -39, 13, 8, "#a3e8ff");
+    p(22, -35, 12, 18, "rgba(255,255,255,0.45)");
+
+    p(-16, -40, 32, 10, "#9cec24");
+    p(-21, -30, 42, 17, "#9cec24");
+    p(-17, -13, 34, 13, "#83d719");
+    p(-8, 0, 16, 13, "#62b815");
+
+    p(-18, -30, 12, 16, "#291237");
+    p(6, -30, 12, 16, "#291237");
+    p(-15, -31, 8, 3, "#e7d8ff");
+    p(7, -31, 8, 3, "#e7d8ff");
+
+    p(-72, -7, 144, 8, "#291237");
+    p(-82, 1, 164, 14, "#291237");
+    p(-74, 15, 148, 15, "#291237");
+
+    p(-64, -3, 128, 8, "#d9d9d9");
+    p(-76, 5, 152, 12, "#bebebe");
+    p(-68, 17, 136, 10, "#7b7b82");
+    p(-48, 27, 96, 8, "#4f4f59");
+
+    [-58, -30, -3, 24, 52].forEach(px => {
+      p(px - 4, 2, 14, 14, "#291237");
+      p(px, 6, 8, 8, "#ffd34c");
+    });
+
+    p(-58, 30, 28, 6, "#291237");
+    p(-48, 36, 22, 5, "#e4e4e4");
+
+    p(-14, 32, 28, 6, "#291237");
+    p(-10, 38, 20, 5, "#e4e4e4");
+
+    p(30, 30, 28, 6, "#291237");
+    p(26, 36, 22, 5, "#e4e4e4");
+
+    ctx.restore();
+  }
+
+  function drawAstronaut(x, y, scale, angle, fire, crown = false, skin = equippedSkin) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.scale(scale, scale);
+
+    const pal = skinPalette(skin);
+
+    const p = (x, y, w, h, color) => {
+      ctx.fillStyle = color;
+      ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+    };
+
+    const outline = "#1a1b2a";
+
+    if (fire) {
+      p(-37, -4, 12, 7, "#ff3b18");
+      p(-42, -1, 10, 8, "#ff8b20");
+      p(-48, 2, 9, 6, "#ffd447");
+      p(-42, 7, 10, 5, "#ff4f1f");
+    }
+
+    if (crown) {
+      p(-12, -37, 24, 5, "#d79419");
+      p(-10, -44, 5, 8, "#ffd84a");
+      p(-2, -48, 5, 12, "#fff06a");
+      p(7, -44, 5, 8, "#ffd84a");
+      p(-13, -34, 26, 4, "#8f5c00");
+    }
+
+    p(-25, -2, 8, 20, outline);
+    p(-24, 0, 6, 17, "#7d7c80");
+    p(-22, 2, 5, 13, "#4d4d57");
+
+    p(-17, -18, 35, 28, outline);
+    p(-12, -23, 24, 5, pal.suit);
+    p(-18, -18, 36, 6, pal.suit);
+    p(-20, -12, 40, 18, pal.suit);
+    p(-15, 6, 30, 7, pal.suit);
+    p(-8, 12, 16, 4, pal.suit);
+
+    p(-10, -15, 23, 17, pal.visor);
+    p(-5, -18, 17, 4, pal.visor);
+    p(8, -11, 3, 7, pal.visorLight);
+    p(-4, -12, 4, 4, "#d8edff");
+
+    p(-20, -8, 4, 10, pal.suitDark);
+    p(17, -7, 3, 10, pal.suitDark);
+
+    p(-12, 12, 24, 21, outline);
+    p(-10, 13, 20, 18, pal.suit);
+    p(-7, 15, 14, 6, "#e7e2d7");
+    p(-6, 20, 12, 6, pal.blue);
+    p(-3, 21, 6, 3, "#9fd5ff");
+
+    p(-20, 14, 8, 15, outline);
+    p(-19, 15, 6, 12, pal.suit);
+    p(-23, 27, 7, 6, pal.suitDark);
+
+    p(12, 14, 8, 15, outline);
+    p(13, 15, 6, 12, pal.suit);
+    p(17, 27, 7, 6, pal.suitDark);
+
+    p(-10, 32, 8, 14, outline);
+    p(-9, 33, 6, 11, pal.suit);
+    p(-12, 43, 10, 5, pal.shade);
+
+    p(3, 32, 8, 14, outline);
+    p(4, 33, 6, 11, pal.suit);
+    p(2, 43, 10, 5, pal.shade);
+
+    ctx.restore();
+  }
+
+  function drawUfoWarning() {
+    ctx.textAlign = "center";
+
+    if (ufo.mode === "attack") {
+      ctx.fillStyle = "#ffec5c";
+      ctx.font = "bold 12px Courier New";
+      ctx.fillText("BOSS UFO: SERET ASTRONAUT", W / 2, 86);
+    } else if (ufo.mode === "passive") {
+      ctx.fillStyle = "#ffe66d";
+      ctx.font = "bold 12px Courier New";
+      ctx.fillText("WARNING: UFO SPAWN", W / 2, 86);
+    } else if (ufo.mode === "warning") {
+      ctx.fillStyle = "#ffec5c";
+      ctx.font = "bold 12px Courier New";
+      ctx.fillText("BOSS UFO DATANG", W / 2, 86);
+    }
+  }
+
+  function drawHUD() {
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.fillRect(12, 12, isLandscape ? 185 : 146, 82);
+
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(12, 12, isLandscape ? 185 : 146, 82);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 15px Courier New";
+    ctx.textAlign = "left";
+    ctx.fillText("LV " + level + "/" + MAX_LEVEL + "  SCORE " + score, 22, 36);
+
+    ctx.fillStyle = "#ffd84a";
+    ctx.font = "bold 12px Courier New";
+    ctx.fillText("COIN " + starCoins, 22, 56);
+
+    ctx.fillStyle = "#9fb0d6";
+    ctx.font = "bold 10px Courier New";
+    ctx.fillText(getRank(score), 22, 73);
+
+    ctx.fillStyle = "#c7d7ff";
+    ctx.font = "bold 9px Courier New";
+    ctx.fillText(currentChallenge ? currentChallenge.name : "", 22, 88);
+
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 14px Courier New";
+    ctx.fillText("BEST " + highScore, W - 58, 32);
+
+    if (slowMoTimer > 0) {
+      ctx.fillStyle = "#c77dff";
+      ctx.font = "bold 10px Courier New";
+      ctx.fillText("SLOW " + Math.ceil(slowMoTimer), W - 58, 50);
+    }
+
+    if (shieldActive) {
+      ctx.fillStyle = "#55d7ff";
+      ctx.font = "bold 10px Courier New";
+      ctx.fillText("SHIELD " + Math.ceil(shieldTimer), W - 58, 68);
+    }
+
+    drawPauseButton();
+  }
+
+  function drawPauseButton() {
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fillRect(pauseBtn.x, pauseBtn.y, pauseBtn.w, pauseBtn.h);
+
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(pauseBtn.x, pauseBtn.y, pauseBtn.w, pauseBtn.h);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(pauseBtn.x + 10, pauseBtn.y + 7, 4, 16);
+    ctx.fillRect(pauseBtn.x + 20, pauseBtn.y + 7, 4, 16);
+  }
+
+  function drawMenu() {
+    const menuCrown = crownUnlocked || highScore >= 100;
+
+    if (isLandscape) {
+      drawAstronaut(W * 0.29, H * 0.43, 1.18, -0.05, true, menuCrown);
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 30px Courier New";
+      ctx.fillText("SPACE GAME", W * 0.29, 68);
+
+      ctx.font = "bold 28px Courier New";
+      ctx.fillText("ESCAPE", W * 0.29, 105);
+
+      ctx.fillStyle = "#a9c3ff";
+      ctx.font = "bold 15px Courier New";
+      ctx.fillText("HIGH SCORE : " + highScore, W * 0.29, H - 135);
+
+      ctx.fillStyle = "#ffd84a";
+      ctx.font = "bold 12px Courier New";
+      ctx.fillText("RANK : " + getRank(highScore) + " | COIN : " + starCoins, W * 0.29, H - 110);
+
+      ctx.fillStyle = "#9fb0d6";
+      ctx.font = "bold 11px Courier New";
+      ctx.fillText("ACHIEVEMENT : " + getAchievementCount() + "/" + achievementData.length, W * 0.29, H - 88);
+    } else {
+      drawAstronaut(W / 2, 180, 1.10, -0.05, true, menuCrown);
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 25px Courier New";
+      ctx.fillText("SPACE GAME", W / 2, 58);
+
+      ctx.font = "bold 24px Courier New";
+      ctx.fillText("ESCAPE", W / 2, 90);
+
+      ctx.fillStyle = "#a9c3ff";
+      ctx.font = "bold 15px Courier New";
+      ctx.fillText("HIGH SCORE : " + highScore, W / 2, 255);
+
+      ctx.fillStyle = "#ffd84a";
+      ctx.font = "bold 12px Courier New";
+      ctx.fillText("RANK : " + getRank(highScore) + " | COIN : " + starCoins, W / 2, 278);
+
+      ctx.fillStyle = "#9fb0d6";
+      ctx.font = "bold 11px Courier New";
+      ctx.fillText("ACHIEVEMENT : " + getAchievementCount() + "/" + achievementData.length, W / 2, 294);
+    }
+
+    drawButton(menuButtons.start);
+    drawButton(menuButtons.skin);
+    drawButton(menuButtons.achieve);
+    drawButton(menuButtons.desc);
+    drawButton(menuButtons.reset);
+
+    ctx.fillStyle = "#8fa8e8";
+    ctx.font = "bold 10px Courier New";
+    ctx.textAlign = "center";
+    ctx.fillText("P = PAUSE | SPACE = START / TERBANG", W / 2, H - 22);
+  }
+
+  function drawDescription() {
+    const panelX = isLandscape ? 70 : 22;
+    const panelY = isLandscape ? 28 : 42;
+    const panelW = W - panelX * 2;
+    const panelH = H - panelY * 2;
+
+    ctx.fillStyle = "#071126";
+    ctx.fillRect(panelX, panelY, panelW, panelH);
+
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(panelX, panelY, panelW, panelH);
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 21px Courier New";
+    ctx.fillText("DESKRIPSI GAME", W / 2, panelY + 40);
+
+    ctx.textAlign = "left";
+    ctx.font = "bold 11px Courier New";
+    ctx.fillStyle = "#dce6ff";
+
+    const text =
+      "Space Game Escape adalah game arcade sederhana bergaya 8-bit. Pemain mengendalikan astronaut kecil di luar angkasa untuk melewati tumpukan planet, mengumpulkan star coin, memakai power-up, melawan Boss UFO, dan finish ke planet yang ada bendera. Game ini dibuat oleh Yordan, Thoriq, Yohanes, Tomi, dan Safrudin.";
+
+    const descEndY = wrapText(text, panelX + 22, panelY + 78, panelW - 44, 18);
+
+    let y = descEndY + 26;
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 12px Courier New";
+    ctx.fillText("Fitur Utama:", panelX + 22, y);
+
+    y += 22;
+
+    ctx.fillStyle = "#dce6ff";
+    ctx.font = "bold 10px Courier New";
+    ctx.fillText("- Multi-level sampai level 5.", panelX + 22, y);
+
+    y += 18;
+    ctx.fillText("- Tantangan random di setiap level.", panelX + 22, y);
+
+    y += 18;
+    ctx.fillText("- Kesulitan makin meningkat tiap level.", panelX + 22, y);
+
+    y += 18;
+    ctx.fillText("- Pause menu + Music/SFX on-off.", panelX + 22, y);
+
+    y += 18;
+    ctx.fillText("- Power-up Shield dan Slow Motion.", panelX + 22, y);
+
+    y += 18;
+    ctx.fillText("- Star Coin untuk membuka skin.", panelX + 22, y);
+
+    y += 18;
+    ctx.fillText("- Achievement dan rank pemain.", panelX + 22, y);
+
+    y += 18;
+    ctx.fillText("- Score 100 tiap level: Boss UFO.", panelX + 22, y);
+
+    y += 18;
+    ctx.fillText("- Finish ke planet yang ada bendera.", panelX + 22, y);
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#8fa8e8";
+    ctx.font = "bold 11px Courier New";
+    ctx.fillText("KLIK / TAP / ESC UNTUK MENU", W / 2, panelY + panelH - 28);
+  }
+
+  function drawSkinShop() {
+    ctx.fillStyle = "rgba(0,0,0,0.48)";
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 23px Courier New";
+    ctx.fillText("SKIN SHOP", W / 2, 70);
+
+    ctx.fillStyle = "#ffd84a";
+    ctx.font = "bold 14px Courier New";
+    ctx.fillText("STAR COIN : " + starCoins, W / 2, 100);
+
+    const startY = isLandscape ? 130 : 190;
+    const gapY = isLandscape ? 86 : 95;
+
+    skinRows.forEach((row, index) => {
+      const rowY = startY + index * gapY;
+      const owned = !!ownedSkins[row.id];
+      const equipped = equippedSkin === row.id;
+
+      ctx.fillStyle = "#071126";
+      ctx.fillRect(W / 2 - 150, rowY, 300, 72);
+
+      ctx.strokeStyle = equipped ? "#ffd84a" : "#ffffff";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(W / 2 - 150, rowY, 300, 72);
+
+      ctx.textAlign = "left";
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 14px Courier New";
+      ctx.fillText(row.name, W / 2 - 133, rowY + 25);
+
+      ctx.fillStyle = "#a9c3ff";
+      ctx.font = "bold 11px Courier New";
+      ctx.fillText(row.price === 0 ? "FREE" : "PRICE: " + row.price + " COIN", W / 2 - 133, rowY + 48);
+
+      const btn = skinActionButton(rowY);
+      const label = equipped ? "EQUIPPED" : owned ? "EQUIP" : "UNLOCK";
+
+      ctx.fillStyle = equipped ? "#5b4914" : "#17275a";
+      ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 10px Courier New";
+      ctx.fillText(label, btn.x + btn.w / 2, btn.y + 22);
+
+      drawAstronaut(W / 2 + 115, rowY + 40, 0.55, 0, false, row.id === "gold", row.id);
+    });
+
+    drawButton(backButton);
+  }
+
+  function skinActionButton(rowY) {
+    return { x: W / 2 + 10, y: rowY + 22, w: 80, h: 32 };
+  }
+
+  function drawAchievements() {
+    ctx.fillStyle = "#071126";
+    ctx.fillRect(isLandscape ? 70 : 18, isLandscape ? 24 : 32, W - (isLandscape ? 140 : 36), H - (isLandscape ? 48 : 64));
+
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(isLandscape ? 70 : 18, isLandscape ? 24 : 32, W - (isLandscape ? 140 : 36), H - (isLandscape ? 48 : 64));
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 21px Courier New";
+    ctx.fillText("ACHIEVEMENT", W / 2, isLandscape ? 58 : 70);
+
+    ctx.fillStyle = "#ffd84a";
+    ctx.font = "bold 12px Courier New";
+    ctx.fillText(getAchievementCount() + "/" + achievementData.length + " TERBUKA", W / 2, isLandscape ? 82 : 95);
+
+    const columns = isLandscape ? 2 : 1;
+    const leftX = isLandscape ? 100 : 38;
+    const rightX = W / 2 + 20;
+    let y = isLandscape ? 125 : 130;
+
+    achievementData.forEach((a, i) => {
+      const open = achievements[a.key];
+      const col = isLandscape ? i % 2 : 0;
+      const row = isLandscape ? Math.floor(i / 2) : i;
+
+      const x = col === 0 ? leftX : rightX;
+      const drawY = y + row * (isLandscape ? 58 : 48);
+
+      ctx.textAlign = "left";
+
+      ctx.fillStyle = open ? "#ffd84a" : "#58627f";
+      ctx.font = "bold 12px Courier New";
+      ctx.fillText((open ? "[OK] " : "[--] ") + a.title, x, drawY);
+
+      ctx.fillStyle = open ? "#dce6ff" : "#7a829a";
+      ctx.font = "bold 9px Courier New";
+      ctx.fillText(a.desc, x + 20, drawY + 16);
+    });
+
+    drawButton(backButton);
+  }
+
+  function drawPauseMenu() {
+    ctx.fillStyle = "rgba(0,0,0,0.72)";
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 30px Courier New";
+    ctx.fillText("PAUSED", W / 2, isLandscape ? 110 : 185);
+
+    pauseButtons.music.text = "MUSIC : " + (musicEnabled ? "ON" : "OFF");
+    pauseButtons.sfx.text = "SFX : " + (sfxEnabled ? "ON" : "OFF");
+
+    drawButton(pauseButtons.resume);
+    drawButton(pauseButtons.music);
+    drawButton(pauseButtons.sfx);
+    drawButton(pauseButtons.restart);
+    drawButton(pauseButtons.menu);
+  }
+
+  function drawGameOver() {
+    ctx.fillStyle = "rgba(0,0,0,0.72)";
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 31px Courier New";
+    ctx.fillText("GAME OVER", W / 2, isLandscape ? 135 : 178);
+
+    ctx.font = "bold 19px Courier New";
+    ctx.fillText("SCORE : " + score, W / 2, isLandscape ? 190 : 230);
+    ctx.fillText("HIGH SCORE : " + highScore, W / 2, isLandscape ? 222 : 263);
+
+    ctx.fillStyle = "#ffd84a";
+    ctx.font = "bold 12px Courier New";
+    ctx.fillText("RANK : " + getRank(highScore), W / 2, isLandscape ? 252 : 292);
+
+    drawButton(gameOverButtons.restart);
+    drawButton(gameOverButtons.menu);
+  }
+
+  function drawLevelComplete() {
+    ctx.fillStyle = "rgba(0,0,0,0.72)";
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = "center";
+
+    ctx.fillStyle = "#ffd84a";
+    ctx.font = "bold 31px Courier New";
+    ctx.fillText("LEVEL COMPLETE", W / 2, isLandscape ? 125 : 175);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 18px Courier New";
+    ctx.fillText("LEVEL " + level + " SELESAI", W / 2, isLandscape ? 175 : 225);
+    ctx.fillText("SCORE : " + score, W / 2, isLandscape ? 205 : 258);
+
+    ctx.fillStyle = "#a9c3ff";
+    ctx.font = "bold 12px Courier New";
+    ctx.fillText("NEXT LEVEL AKAN LEBIH SULIT", W / 2, isLandscape ? 232 : 288);
+
+    drawButton(levelCompleteButtons.next);
+    drawButton(levelCompleteButtons.restart);
+    drawButton(levelCompleteButtons.menu);
+  }
+
+  function drawWinScreen() {
+    ctx.fillStyle = "rgba(0,0,0,0.68)";
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = "center";
+
+    ctx.fillStyle = "#ffd400";
+    ctx.font = "bold 34px Courier New";
+    ctx.fillText("MISSION", W / 2, isLandscape ? 135 : 170);
+    ctx.fillText("COMPLETE", W / 2, isLandscape ? 175 : 210);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 20px Courier New";
+    ctx.fillText("FINAL SCORE : " + score, W / 2, isLandscape ? 230 : 260);
+    ctx.fillText("HIGH SCORE : " + highScore, W / 2, isLandscape ? 265 : 295);
+
+    ctx.fillStyle = "#ffd84a";
+    ctx.font = "bold 13px Courier New";
+    ctx.fillText("SEMUA LEVEL BERHASIL DISELESAIKAN", W / 2, isLandscape ? 300 : 330);
+
+    drawButton(winButtons.restart);
+    drawButton(winButtons.menu);
+  }
+
+  function drawAchievementPopup() {
+    if (!achievementPopups.length) return;
+
+    const pop = achievementPopups[0];
+
+    ctx.fillStyle = "rgba(0,0,0,0.75)";
+    ctx.fillRect(W / 2 - 155, 105, 310, 58);
+
+    ctx.strokeStyle = "#ffd84a";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(W / 2 - 155, 105, 310, 58);
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffd84a";
+    ctx.font = "bold 12px Courier New";
+    ctx.fillText("ACHIEVEMENT UNLOCKED", W / 2, 124);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 14px Courier New";
+    ctx.fillText(pop.title, W / 2, 146);
+  }
+
+  function drawButton(btn) {
+    ctx.fillStyle = "#071126";
+    ctx.fillRect(btn.x + 5, btn.y + 5, btn.w, btn.h);
+
+    ctx.fillStyle = "#17275a";
+    ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 15px Courier New";
+    ctx.textAlign = "center";
+    ctx.fillText(btn.text, btn.x + btn.w / 2, btn.y + Math.floor(btn.h / 2) + 6);
+  }
+
+  function wrapText(text, x, y, maxWidth, lineHeight) {
+    const words = text.split(" ");
+    let line = "";
+
+    for (let i = 0; i < words.length; i++) {
+      const testLine = line + words[i] + " ";
+      const width = ctx.measureText(testLine).width;
+
+      if (width > maxWidth && i > 0) {
+        ctx.fillText(line, x, y);
+        line = words[i] + " ";
+        y += lineHeight;
+      } else {
+        line = testLine;
+      }
+    }
+
+    ctx.fillText(line, x, y);
+    return y;
+  }
+
+  function handlePointerDown(e) {
+    e.preventDefault();
+    initAudio();
+
+    const pos = pointerPosition(e);
+
+    if (state === "menu") {
+      if (rectHit(menuButtons.start, pos.x, pos.y)) {
+        startGame();
+      } else if (rectHit(menuButtons.skin, pos.x, pos.y)) {
+        state = "skins";
+      } else if (rectHit(menuButtons.achieve, pos.x, pos.y)) {
+        state = "achievements";
+      } else if (rectHit(menuButtons.desc, pos.x, pos.y)) {
+        state = "description";
+      } else if (rectHit(menuButtons.reset, pos.x, pos.y)) {
+        resetHighScore();
+      }
+      return;
+    }
+
+    if (state === "skins") {
+      if (rectHit(backButton, pos.x, pos.y)) {
+        state = "menu";
+        return;
+      }
+
+      const startY = isLandscape ? 130 : 190;
+      const gapY = isLandscape ? 86 : 95;
+
+      for (let i = 0; i < skinRows.length; i++) {
+        const rowY = startY + i * gapY;
+        const btn = skinActionButton(rowY);
+
+        if (rectHit(btn, pos.x, pos.y)) {
+          handleSkinAction(skinRows[i]);
+          return;
+        }
+      }
+
+      return;
+    }
+
+    if (state === "achievements") {
+      if (rectHit(backButton, pos.x, pos.y)) {
+        state = "menu";
+      }
+      return;
+    }
+
+    if (state === "ready") {
+      beginPlayingFromRocket();
+      return;
+    }
+
+    if (state === "description") {
+      state = "menu";
+      return;
+    }
+
+    if (state === "paused") {
+      handlePauseClick(pos);
+      return;
+    }
+
+    if (state === "gameover") {
+      if (rectHit(gameOverButtons.restart, pos.x, pos.y)) {
+        startGame();
+      } else if (rectHit(gameOverButtons.menu, pos.x, pos.y)) {
+        state = "menu";
+      }
+      return;
+    }
+
+    if (state === "levelcomplete") {
+      if (rectHit(levelCompleteButtons.next, pos.x, pos.y)) {
+        startNextLevel();
+      } else if (rectHit(levelCompleteButtons.restart, pos.x, pos.y)) {
+        startGame();
+      } else if (rectHit(levelCompleteButtons.menu, pos.x, pos.y)) {
+        state = "menu";
+      }
+      return;
+    }
+
+    if (state === "win") {
+      if (rectHit(winButtons.restart, pos.x, pos.y)) {
+        startGame();
+      } else if (rectHit(winButtons.menu, pos.x, pos.y)) {
+        state = "menu";
+      }
+      return;
+    }
+
+    if (state === "playing") {
+      if (rectHit(pauseBtn, pos.x, pos.y)) {
+        state = "paused";
+        return;
+      }
+
+      if (battleMode) {
+        dragControl.active = true;
+        setDragTarget(pos);
+      } else {
+        flap();
+      }
+    }
+  }
+
+  function handleSkinAction(row) {
+    if (ownedSkins[row.id]) {
+      equippedSkin = row.id;
+      saveSkins();
+      playPowerSound();
+      return;
+    }
+
+    if (starCoins >= row.price) {
+      starCoins -= row.price;
+      ownedSkins[row.id] = true;
+      equippedSkin = row.id;
+
+      saveCoins();
+      saveSkins();
+
+      unlockAchievement("skinUnlock");
+      playPowerSound();
+    } else {
+      playResetSound();
+    }
+  }
+
+  function handlePauseClick(pos) {
+    if (rectHit(pauseButtons.resume, pos.x, pos.y)) {
+      state = "playing";
+    } else if (rectHit(pauseButtons.music, pos.x, pos.y)) {
+      musicEnabled = !musicEnabled;
+      localStorage.setItem(MUSIC_KEY, String(musicEnabled));
+      playPowerSound();
+    } else if (rectHit(pauseButtons.sfx, pos.x, pos.y)) {
+      sfxEnabled = !sfxEnabled;
+      localStorage.setItem(SFX_KEY, String(sfxEnabled));
+      playPowerSound();
+    } else if (rectHit(pauseButtons.restart, pos.x, pos.y)) {
+      startGame();
+    } else if (rectHit(pauseButtons.menu, pos.x, pos.y)) {
+      state = "menu";
+    }
+  }
+
+  function handlePointerMove(e) {
+    if (state !== "playing" || !battleMode || !dragControl.active) return;
+
+    e.preventDefault();
+    const pos = pointerPosition(e);
+    setDragTarget(pos);
+  }
+
+  function handlePointerUp(e) {
+    if (dragControl.active) {
+      e.preventDefault();
+    }
+
+    dragControl.active = false;
+  }
+
+  canvas.addEventListener("mousedown", handlePointerDown);
+  window.addEventListener("mousemove", handlePointerMove);
+  window.addEventListener("mouseup", handlePointerUp);
+
+  canvas.addEventListener("touchstart", handlePointerDown, { passive: false });
+  window.addEventListener("touchmove", handlePointerMove, { passive: false });
+  window.addEventListener("touchend", handlePointerUp, { passive: false });
+  window.addEventListener("touchcancel", handlePointerUp, { passive: false });
+
+  window.addEventListener("resize", resizeCanvas);
+  window.addEventListener("orientationchange", () => {
+    setTimeout(resizeCanvas, 200);
+  });
+
+  window.addEventListener("keydown", (e) => {
+    initAudio();
+
+    if (e.code === "KeyP") {
+      if (state === "playing") state = "paused";
+      else if (state === "paused") state = "playing";
+    }
+
+    if (e.code === "Space") {
+      e.preventDefault();
+
+      if (state === "ready") {
+        beginPlayingFromRocket();
+      } else if (state === "playing") {
+        if (!battleMode) {
+          flap();
+        }
+      } else if (state === "menu") {
+        startGame();
+      } else if (state === "gameover" || state === "win") {
+        startGame();
+      } else if (state === "levelcomplete") {
+        startNextLevel();
+      }
+    }
+
+    if (e.code === "Escape") {
+      if (state === "description" || state === "skins" || state === "achievements" || state === "ready") {
+        state = "menu";
+      } else if (state === "playing") {
+        state = "paused";
+      } else if (state === "paused") {
+        state = "playing";
+      } else if (state === "gameover" || state === "win" || state === "levelcomplete") {
+        state = "menu";
+      }
+    }
+  });
+
+  function loop(timestamp) {
+    resizeCanvas();
+
+    const dt = Math.min((timestamp - lastTime) / 1000 || 0, 0.033);
+    lastTime = timestamp;
+
+    update(dt);
+    draw();
+
+    requestAnimationFrame(loop);
+  }
+
+  requestAnimationFrame(loop);
+})();
+</script>
+
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./service-worker.js")
+      .then(() => console.log("Service Worker berhasil didaftarkan"))
+      .catch(error => console.log("Service Worker gagal:", error));
+  });
+}
+</script>
+</body>
+</html>
