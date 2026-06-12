@@ -1,4 +1,4 @@
-const CACHE_NAME = "space-game-escape-v1";
+const CACHE_NAME = "space-game-escape-v2";
 
 const FILES_TO_CACHE = [
   "./",
